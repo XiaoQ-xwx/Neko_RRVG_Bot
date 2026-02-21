@@ -1,6 +1,6 @@
 /**
  * Cloudflare Workers (Pages) - Telegram Bot Entry Point (V5.5 独立配置版)
- * 核心升级：修复全局设置串线问题，为每个群组引入完全独立的设置面板，JSON 直导。
+ * 核心升级：修复全局设置串线问题，为每个群组引入完全独立的设置面板，Add JSON 直导。
  */
 
 export default {
