@@ -1,6 +1,6 @@
 /**
- * Cloudflare Workers (Pages) - Telegram Bot Entry Point (V5.2 安全隔离版)
- * 核心升级：修复群组数据越权漏洞 (严格按 chat_id 隔离数据)，恢复精美 Webhook 界面
+ * Cloudflare Workers (Pages) - Telegram Bot Entry Point (V5.5 独立配置版)
+ * 核心升级：修复全局设置串线问题，为每个群组引入完全独立的设置面板，JSON 直导。
  */
 
 export default {
@@ -44,15 +44,12 @@ async function handleSetup(origin, env) {
       `CREATE TABLE IF NOT EXISTS media_library (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER, chat_id INTEGER, topic_id INTEGER, category_name TEXT, view_count INTEGER DEFAULT 0, file_unique_id TEXT, file_id TEXT, media_type TEXT, caption TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
       `CREATE TABLE IF NOT EXISTS user_favorites (user_id INTEGER, media_id INTEGER, saved_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id, media_id));`,
       `CREATE TABLE IF NOT EXISTS last_served (user_id INTEGER PRIMARY KEY, last_media_id INTEGER, served_at INTEGER);`,
-      `CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT);`,
       `CREATE TABLE IF NOT EXISTS served_history (media_id INTEGER PRIMARY KEY);`,
       
-      `INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('display_mode', 'B');`,
-      `INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('anti_repeat', 'true');`,
-      `INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('auto_jump', 'true');`,
-      `INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('dup_notify', 'false');`,
-      `INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('show_success', 'true');`,
-      `INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('next_mode', 'replace');`
+      // V5.5 核心升级：新建带有 chat_id 的群组独立配置表
+      `CREATE TABLE IF NOT EXISTS chat_settings (chat_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(chat_id, key));`,
+      // 兼容旧版留存
+      `CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT);`
     ];
 
     for (const sql of initSQL) await env.D1.prepare(sql).run();
@@ -66,14 +63,13 @@ async function handleSetup(origin, env) {
     const tgRes = await tgAPI('setWebhook', { url: webhookUrl }, env);
     if (!tgRes.ok) throw new Error('Webhook 注册失败');
 
-    // 恢复精美的可视化界面
     const html = `
       <!DOCTYPE html>
       <html lang="zh-CN">
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Bot 部署成功</title>
+        <title>Bot部署成功喵！</title>
         <style>
           body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f3f4f6; margin: 0; }
           .card { background: white; padding: 2.5rem 3rem; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); text-align: center; max-width: 500px;}
@@ -84,17 +80,17 @@ async function handleSetup(origin, env) {
       </head>
       <body>
         <div class="card">
-          <h1>🎉 V5.2 部署大成功！</h1>
-          <p>群组隔离安全锁已生效，D1 数据库结构已更新。<br>Webhook 已安全绑定至：</p>
+          <h1>🎉 籽青 V5.5 部署大成功喵！</h1>
+          <p>这里一般放更新介绍，但俺懒得写了喵！<br>Webhook 已经帮主人绑定好啦：</p>
           <div class="code-box">${webhookUrl}</div>
-          <p><b>多群组数据已完全隔离，再也不用担心数据泄露啦！</b></p>
+          <p><b>快去群里玩耍吧！QwQ</b></p>
         </div>
       </body>
       </html>
     `;
     return new Response(html, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
   } catch (error) {
-    return new Response(`部署失败: ${error.message}`, { status: 500 });
+    return new Response(`部署失败喵: ${error.message}`, { status: 500 });
   }
 }
 
@@ -115,17 +111,17 @@ async function handleMessage(message, env) {
   const topicId = message.message_thread_id || null;
   const userId = message.from.id;
 
-  if (text.startsWith('/start')) return sendMainMenu(chatId, topicId, env);
+  if (text.startsWith('/start')) return sendMainMenu(chatId, topicId, env, userId);
 
   if (text.startsWith('/help')) {
-    const helpText = `📖 <b>籽青的使用说明书</b>\n/start - 唤出籽青的主菜单 (随机抽取、排行榜、设置等)\n/help - 显示本帮助信息\n\n<b>【管理员专属指令】</b>\n/bind &lt;分类名&gt; - 在群组话题内发送，将该话题绑定为采集库\n/bind_output - 将当前话题设为专属推送展示窗口\n/import_json - 获取导入历史消息数据的帮助`;
+    const helpText = `📖 **籽青的说明书喵~ (≧∇≦)**\n/start - 唤出籽青的主菜单\n\n**【管理员专属指令喵】**\n/bind &lt;分类名&gt; - 将当前话题绑定为采集库\n/bind_output - 将当前话题设为专属推送展示窗口\n/import_json - 获取关于导入历史消息的说明`;
     await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: helpText, parse_mode: 'HTML' }, env);
     return;
   }
 
   if (text.startsWith('/import_json')) {
-    const importHelp = `📥 <b>关于导入历史数据</b>\n\n为了避免 Worker 内存溢出，请在电脑上运行配套的 <b>Python 导入脚本</b>。\n\n配置好您的 <code>ADMIN_SECRET</code>，脚本会自动将 JSON 切片并推送到当前群组的数据库中！`;
-    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: importHelp, parse_mode: 'HTML' }, env);
+    const importHelp = `📥 **关于导入历史数据喵**\n\n籽青有两种方法可以吃掉历史数据哦：\n\n1. **直接投喂 (适合 5MB 以内的小包裹)**：直接把 \`.json\` 文件发给籽青，并在文件的说明(Caption)里写上 \`/import 分类名\` 即可！\n2. **脚本投喂 (适合大包裹)**：在电脑上运行配套的 Python 导入脚本，慢慢喂给籽青！QwQ`;
+    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: importHelp, parse_mode: 'Markdown' }, env);
     return;
   }
 
@@ -135,7 +131,7 @@ async function handleMessage(message, env) {
     if (!category) return;
     await env.D1.prepare(`INSERT INTO config_topics (chat_id, chat_title, topic_id, category_name, bound_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(chatId, message.chat.title || 'Private', topicId, category, userId).run();
-    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `绑定成功！已将当前话题与分类【${category}】绑定！` }, env);
+    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `绑定成功喵！籽青已将当前话题与分类【${category}】绑定啦！(๑•̀ㅂ•́)و✧` }, env);
     return;
   }
 
@@ -143,19 +139,96 @@ async function handleMessage(message, env) {
     if (!(await isAdmin(chatId, userId, env))) return;
     await env.D1.prepare(`INSERT INTO config_topics (chat_id, chat_title, topic_id, category_name, bound_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(chatId, message.chat.title || 'Private', topicId, 'output', userId).run();
-    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `设置成功！这里将作为专属输出话题。` }, env);
+    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `设置成功喵！籽青以后就在这里发图啦~ QwQ` }, env);
     return;
   }
 
+  // ==== 内置 JSON 直接解析功能 ====
+  if (message.document && message.document.file_name && message.document.file_name.endsWith('.json') && text.startsWith('/import ')) {
+    if (!(await isAdmin(chatId, userId, env))) {
+      return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `🚨 呜呜，只有管理员主人才可以给籽青投喂文件哦！` }, env);
+    }
+    
+    const category = text.replace('/import ', '').trim();
+    if (!category) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `喵？请在文件说明里写上正确格式，比如：\`/import 分类名\` 哦！` }, env);
+
+    if (message.document.file_size > 5242880) {
+      return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `🚨 呜呜... 这个包裹太大了（超过 5MB），籽青的肚子装不下会撑爆的！请使用 Python 脚本进行外部导入喵 QwQ` }, env);
+    }
+
+    await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `📥 收到包裹！籽青正在努力吃掉这个文件，请稍等喵...` }, env);
+
+    try {
+      const fileRes = await tgAPI('getFile', { file_id: message.document.file_id }, env);
+      const fileData = await fileRes.json();
+      if (!fileData.ok) throw new Error("无法从 TG 服务器拉取文件");
+      const downloadUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN_ENV}/${fileData.result.file_path}`;
+
+      const jsonRes = await fetch(downloadUrl);
+      const jsonData = await jsonRes.json();
+      const messages = jsonData.messages || [];
+      
+      let validMedia = [];
+      for (const msg of messages) {
+        if (msg.type !== 'message') continue;
+        let mediaType = null;
+        if (msg.photo) mediaType = 'photo';
+        else if (msg.media_type === 'video_file') mediaType = 'video';
+        else if (msg.media_type === 'animation') mediaType = 'animation';
+        else if (msg.media_type) mediaType = 'document';
+
+        if (!mediaType) continue;
+
+        let caption = "";
+        if (Array.isArray(msg.text)) {
+          caption = msg.text.map(t => typeof t === 'string' ? t : (t.text || '')).join('');
+        } else if (typeof msg.text === 'string') {
+          caption = msg.text;
+        }
+
+        validMedia.push({
+          message_id: msg.id,
+          chat_id: chatId,
+          topic_id: null,
+          category_name: category,
+          file_unique_id: `import_${chatId}_${msg.id}`, 
+          file_id: '',
+          media_type: mediaType,
+          caption: caption.substring(0, 100) 
+        });
+      }
+
+      if (validMedia.length === 0) {
+        return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `❓ 哎呀，籽青在这个文件里没有找到任何图片或视频记录喵。` }, env);
+      }
+
+      let successCount = 0;
+      for (let i = 0; i < validMedia.length; i += 50) {
+        const batch = validMedia.slice(i, i + 50);
+        const stmts = batch.map(item => {
+          return env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(item.message_id, item.chat_id, item.topic_id, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption);
+        });
+        await env.D1.batch(stmts);
+        successCount += batch.length;
+      }
+
+      await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `🎉 嗝~ 吃饱啦！成功从文件里导入了 ${successCount} 条【${category}】的记录喵！` }, env);
+    } catch (err) {
+      await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `❌ 呜呜，籽青吃坏肚子了，导入失败喵：${err.message}` }, env);
+    }
+    return; 
+  }
+
+  // ==== 日常媒体收录拦截 ====
   let mediaInfo = extractMediaInfo(message);
   if (mediaInfo.fileUniqueId) {
     const query = await env.D1.prepare(`SELECT category_name FROM config_topics WHERE chat_id = ? AND (topic_id = ? OR topic_id IS NULL) AND category_name != 'output' LIMIT 1`).bind(chatId, topicId).first();
     if (query && query.category_name) {
-      // 增加 chat_id 安全过滤
       const existing = await env.D1.prepare(`SELECT id FROM media_library WHERE file_unique_id = ? AND chat_id = ? LIMIT 1`).bind(mediaInfo.fileUniqueId, chatId).first();
       if (existing) {
-        const notify = await getSetting('dup_notify', env);
-        if (notify === 'true') await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id, text: "籽青发现这个内容之前已经收录过啦~" }, env);
+        const notify = await getSetting(chatId, 'dup_notify', env);
+        if (notify === 'true') await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id, text: "哎呀，籽青发现这个内容之前已经收录过啦喵~" }, env);
         return; 
       }
       await env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -185,25 +258,28 @@ function extractMediaInfo(message) {
 async function handleCallback(callback, env) {
   const data = callback.data;
   const userId = callback.from.id;
-  const chatId = callback.message.chat.id; // 安全核心：所有操作绑定此群组ID
+  const chatId = callback.message.chat.id; 
   const msgId = callback.message.message_id;
   const topicId = callback.message.message_thread_id || null;
   const cbId = callback.id;
 
   if (data === 'main_menu') {
-    await editMainMenu(chatId, msgId, env);
+    await editMainMenu(chatId, msgId, env, userId);
     await tgAPI('answerCallbackQuery', { callback_query_id: cbId }, env);
   } else if (data === 'main_menu_new') {
-    await sendMainMenu(chatId, topicId, env);
+    await sendMainMenu(chatId, topicId, env, userId);
     await tgAPI('answerCallbackQuery', { callback_query_id: cbId }, env);
   } else if (data === 'start_random') {
-    await showCategories(chatId, msgId, env);
+    await showCategories(chatId, msgId, env, userId);
     await tgAPI('answerCallbackQuery', { callback_query_id: cbId }, env);
   } else if (data.startsWith('random_') || data.startsWith('next_')) {
-    const isNext = data.startsWith('next_');
-    const category = data.replace('random_', '').replace('next_', '');
-    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "正在为您抽取..." }, env);
-    await sendRandomMedia(userId, chatId, msgId, topicId, category, isNext, env);
+    const action = data.startsWith('random_') ? 'random_' : 'next_';
+    const params = data.replace(action, '').split('|');
+    const category = params[0];
+    const sourceChatId = params.length > 1 ? parseInt(params[1]) : chatId;
+    
+    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "籽青正在为你抽取喵..." }, env);
+    await sendRandomMedia(userId, chatId, msgId, topicId, category, sourceChatId, action === 'next_', env);
   } 
   
   else if (data.startsWith('fav_add_')) {
@@ -217,7 +293,7 @@ async function handleCallback(callback, env) {
     await tgAPI('answerCallbackQuery', { callback_query_id: cbId }, env);
   } else if (data.startsWith('fav_del_')) {
     await env.D1.prepare(`DELETE FROM user_favorites WHERE user_id = ? AND media_id = ?`).bind(userId, parseInt(data.replace('fav_del_', ''))).run();
-    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "已从收藏夹移除！" }, env);
+    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "已从收藏夹移除喵！" }, env);
     await showFavoritesList(chatId, msgId, userId, 0, env);
   } 
   
@@ -228,8 +304,9 @@ async function handleCallback(callback, env) {
   }
   
   else if (data.startsWith('set_')) {
+    if (chatId > 0) return tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "喵！只能在群组内使用设置面板哦！", show_alert: true }, env);
     if (!(await isAdmin(chatId, userId, env))) {
-      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "权限不足，仅管理员可调整！", show_alert: true }, env);
+      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "呜呜，只有管理员才能调整籽青哦！", show_alert: true }, env);
       return;
     }
 
@@ -244,38 +321,34 @@ async function handleCallback(callback, env) {
     else if (data === 'set_unbind_list') await showUnbindList(chatId, msgId, env);
     else if (data.startsWith('set_unbind_do_')) {
       await env.D1.prepare(`DELETE FROM config_topics WHERE id = ? AND chat_id = ?`).bind(parseInt(data.replace('set_unbind_do_', '')), chatId).run();
-      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "解绑成功！", show_alert: true }, env);
+      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "解绑成功喵！", show_alert: true }, env);
       await showUnbindList(chatId, msgId, env);
     }
     
     else if (data === 'set_danger_zone') {
-      const text = "⚠️ **危险操作区**\n\n这里的操作仅对当前群组生效，且不可逆！";
-      const keyboard = [
-        [{ text: "🧨 清空本群数据统计", callback_data: "set_clear_stats_1" }],
-        [{ text: "🚨 彻底清空本群媒体库", callback_data: "set_clear_media_1" }],
-        [{ text: "⬅️ 返回安全区", callback_data: "set_main" }]
-      ];
+      const text = "⚠️ **危险操作区**\n\n这里的操作仅对当前群组生效，且不可逆喵！";
+      const keyboard = [[{ text: "🧨 清空本群数据统计", callback_data: "set_clear_stats_1" }], [{ text: "🚨 彻底清空本群媒体库", callback_data: "set_clear_media_1" }], [{ text: "⬅️ 返回安全区", callback_data: "set_main" }]];
       await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }, env);
     }
     else if (data === 'set_clear_stats_1') {
-      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "⚠️ 确定仅清空本群统计数据？", reply_markup: { inline_keyboard: [[{ text: "🔴 确认清空 (第1次)", callback_data: "set_clear_stats_2" }], [{ text: "⬅️ 返回", callback_data: "set_main" }]] } }, env);
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "⚠️ 确定仅清空本群统计数据吗喵？", reply_markup: { inline_keyboard: [[{ text: "🔴 确认清空 (第1次)", callback_data: "set_clear_stats_2" }], [{ text: "⬅️ 返回", callback_data: "set_main" }]] } }, env);
     } else if (data === 'set_clear_stats_2') {
-      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🧨 **最后警告**：即将清空本群浏览量！", parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "☠️ 彻底清空！", callback_data: "set_clear_stats_do" }], [{ text: "⬅️ 算了", callback_data: "set_main" }]] } }, env);
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🧨 **最后警告**：即将清空本群浏览量喵！", parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "☠️ 彻底清空！", callback_data: "set_clear_stats_do" }], [{ text: "⬅️ 算了", callback_data: "set_main" }]] } }, env);
     } else if (data === 'set_clear_stats_do') {
       await env.D1.prepare(`UPDATE media_library SET view_count = 0 WHERE chat_id = ?`).bind(chatId).run();
       await env.D1.prepare(`DELETE FROM served_history WHERE media_id IN (SELECT id FROM media_library WHERE chat_id = ?)`).bind(chatId).run();
-      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "当前群组统计重置完毕！", show_alert: true }, env);
+      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "当前群组统计重置完毕喵！", show_alert: true }, env);
       await showSettingsMain(chatId, msgId, env);
     }
     else if (data === 'set_clear_media_1') {
-      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🚨 **高危警告**\n\n即将清空【本群收录的所有媒体】！", parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🩸 我确定要删除本群全部媒体", callback_data: "set_clear_media_2" }], [{ text: "⬅️ 返回安全区", callback_data: "set_main" }]] } }, env);
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🚨 **高危警告**\n\n即将清空【本群收录的所有媒体】喵！", parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🩸 我确定要删除本群全部媒体", callback_data: "set_clear_media_2" }], [{ text: "⬅️ 返回安全区", callback_data: "set_main" }]] } }, env);
     } else if (data === 'set_clear_media_2') {
-      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🌋 **最终警告**\n\n一旦按下无法恢复！真的要清空吗？", parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "💥 毁天灭地！", callback_data: "set_clear_media_do" }], [{ text: "⬅️ 放弃操作", callback_data: "set_main" }]] } }, env);
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🌋 **最终警告**\n\n一旦按下无法恢复喵！真的要清空吗？", parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "💥 毁天灭地！", callback_data: "set_clear_media_do" }], [{ text: "⬅️ 放弃操作", callback_data: "set_main" }]] } }, env);
     } else if (data === 'set_clear_media_do') {
       await env.D1.prepare(`DELETE FROM user_favorites WHERE media_id IN (SELECT id FROM media_library WHERE chat_id = ?)`).bind(chatId).run();
       await env.D1.prepare(`DELETE FROM served_history WHERE media_id IN (SELECT id FROM media_library WHERE chat_id = ?)`).bind(chatId).run();
       await env.D1.prepare(`DELETE FROM media_library WHERE chat_id = ?`).bind(chatId).run(); 
-      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "当前群组媒体库已被彻底清空！", show_alert: true }, env);
+      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "当前群组媒体库已被彻底清空喵！", show_alert: true }, env);
       await showSettingsMain(chatId, msgId, env);
     }
     await tgAPI('answerCallbackQuery', { callback_query_id: cbId }, env);
@@ -283,39 +356,89 @@ async function handleCallback(callback, env) {
 }
 
 /* =========================================================================
- * UI 流转逻辑
+ * UI 流转逻辑 (包含身份鉴权)
  * ========================================================================= */
-async function sendMainMenu(chatId, topicId, env) {
-  await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "你好呀！我是籽青，请问今天想看点什么呢？", reply_markup: getMainMenuMarkup() }, env);
+async function sendMainMenu(chatId, topicId, env, userId) {
+  if (chatId > 0) {
+    const allowedGroups = await getUserAllowedGroups(userId, env);
+    if (allowedGroups.length === 0) {
+      await tgAPI('sendMessage', { chat_id: chatId, text: "⛔ 喵呜... 籽青查了一下，你目前还没有加入任何授权群组呢，不能给你看图库哦 QwQ", parse_mode: 'HTML' }, env);
+      return;
+    }
+  }
+  await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "你好呀！我是籽青喵 (≧∇≦) 请问今天想看点什么呢？", reply_markup: getMainMenuMarkup() }, env);
 }
-async function editMainMenu(chatId, msgId, env) {
-  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "籽青的主菜单，请选择：", reply_markup: getMainMenuMarkup() }, env);
+
+async function editMainMenu(chatId, msgId, env, userId) {
+  if (chatId > 0) {
+    const allowedGroups = await getUserAllowedGroups(userId, env);
+    if (allowedGroups.length === 0) {
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "⛔ 喵... 你好像退群了呢，籽青已经把菜单收回去了哦！" }, env);
+      return;
+    }
+  }
+  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "这是籽青的主菜单，请选择喵：", reply_markup: getMainMenuMarkup() }, env);
 }
+
 function getMainMenuMarkup() {
   return { inline_keyboard: [[{ text: "🎲 开始随机", callback_data: "start_random" }], [{ text: "🏆 本群排行", callback_data: "leaderboard" }, { text: "📁 收藏夹", callback_data: "favorites" }], [{ text: "⚙️ 籽青设置 (限管理)", callback_data: "set_main" }]] };
 }
 
-async function showCategories(chatId, msgId, env) {
-  // 安全限制：只拉取本群的分类
-  const { results } = await env.D1.prepare(`SELECT DISTINCT category_name FROM config_topics WHERE category_name != 'output' AND chat_id = ?`).bind(chatId).all();
-  if (!results || results.length === 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "当前群组还没有绑定任何分类呢，管理员请使用 /bind 绑定哦！", reply_markup: getBackMarkup() }, env);
-  const keyboard = results.map(row => [{ text: `📂 ${row.category_name}`, callback_data: `random_${row.category_name}` }]);
+async function showCategories(chatId, msgId, env, userId) {
+  let keyboard = [];
+  
+  if (chatId < 0) {
+    const localRes = await env.D1.prepare(`SELECT DISTINCT category_name FROM config_topics WHERE category_name != 'output' AND chat_id = ?`).bind(chatId).all();
+    if (localRes.results) {
+      localRes.results.forEach(row => keyboard.push([{ text: `📂 ${row.category_name}`, callback_data: `random_${row.category_name}|${chatId}` }]));
+    }
+  } else {
+    const allowedGroups = await getUserAllowedGroups(userId, env);
+    for (const groupId of allowedGroups) {
+      const groupRes = await env.D1.prepare(`SELECT DISTINCT category_name, chat_title FROM config_topics WHERE category_name != 'output' AND chat_id = ?`).bind(groupId).all();
+      if (groupRes.results) {
+        groupRes.results.forEach(row => {
+          keyboard.push([{ text: `📂 [${row.chat_title}] ${row.category_name}`, callback_data: `random_${row.category_name}|${groupId}` }]);
+        });
+      }
+    }
+  }
+
+  if (keyboard.length === 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "呜呜，当前群组还没有绑定任何分类喵，管理员请使用 /bind 绑定哦！", reply_markup: getBackMarkup() }, env);
+
   keyboard.push([{ text: "🏠 返回主菜单", callback_data: "main_menu" }]);
-  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "请选择您感兴趣的分类：", reply_markup: { inline_keyboard: keyboard } }, env);
+  const text = chatId < 0 ? "请选择您感兴趣的分类喵：" : "👇 以下是您所在群组的专属图库喵：";
+  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: text, reply_markup: { inline_keyboard: keyboard } }, env);
 }
 
-async function sendRandomMedia(userId, chatId, msgId, topicId, category, isNext, env) {
-  // 安全限制：寻找当前群组的输出话题
-  const output = await env.D1.prepare(`SELECT chat_id, topic_id FROM config_topics WHERE category_name = 'output' AND chat_id = ? LIMIT 1`).bind(chatId).first();
-  if (!output) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `管理员还没设置输出话题呢，请用 /bind_output 设置！` }, env);
+// ==== 核心抽取与展现逻辑 (融合 方案A: 失效自动清理 & 群组炸群连坐清理) ====
+async function sendRandomMedia(userId, chatId, msgId, topicId, category, sourceChatId, isNext, env) {
+  if (chatId > 0) {
+    const inGroup = await isUserInGroup(sourceChatId, userId, env);
+    if (!inGroup) {
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "🚨 喵！大骗子！籽青发现你已经退群啦，休想再拿之前的菜单偷看！(｀・ω・´)" }, env);
+      return;
+    }
+  }
 
-  const mode = await getSetting('display_mode', env);
-  const useAntiRepeat = (await getSetting('anti_repeat', env)) === 'true';
-  const autoJump = (await getSetting('auto_jump', env)) === 'true';
-  const showSuccess = (await getSetting('show_success', env)) === 'true';
-  const nextMode = await getSetting('next_mode', env) || 'replace'; 
+  let outChatId = chatId;
+  let outTopicId = topicId;
+  
+  if (chatId < 0) {
+    const output = await env.D1.prepare(`SELECT chat_id, topic_id FROM config_topics WHERE category_name = 'output' AND chat_id = ? LIMIT 1`).bind(chatId).first();
+    if (!output) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `喵？管理员还没设置本群输出话题呢，请用 /bind_output 设置！` }, env);
+    outChatId = output.chat_id;
+    outTopicId = output.topic_id;
+  }
+
+  const mode = await getSetting(sourceChatId, 'display_mode', env);
+  const useAntiRepeat = (await getSetting(sourceChatId, 'anti_repeat', env)) === 'true';
+  const autoJump = (await getSetting(sourceChatId, 'auto_jump', env)) === 'true';
+  const showSuccess = (await getSetting(sourceChatId, 'show_success', env)) === 'true';
+  const nextMode = await getSetting(sourceChatId, 'next_mode', env) || 'replace'; 
   const now = Date.now();
 
+  // 连点防刷退回逻辑
   if (isNext) {
     const last = await env.D1.prepare(`SELECT * FROM last_served WHERE user_id = ?`).bind(userId).first();
     if (last && (now - last.served_at) < 30000) {
@@ -324,58 +447,103 @@ async function sendRandomMedia(userId, chatId, msgId, topicId, category, isNext,
     }
   }
 
-  // 安全限制：只抽取本群内容
-  let media = useAntiRepeat 
-    ? await env.D1.prepare(`SELECT * FROM media_library WHERE category_name = ? AND chat_id = ? AND id NOT IN (SELECT media_id FROM served_history) ORDER BY RANDOM() LIMIT 1`).bind(category, chatId).first() 
-    : await env.D1.prepare(`SELECT * FROM media_library WHERE category_name = ? AND chat_id = ? ORDER BY RANDOM() LIMIT 1`).bind(category, chatId).first();
+  // 🌟 新增：方案 A 自动重试与体检循环 (最多重试 3 次，防止 CF Worker 超时)
+  let attempts = 0;
+  let foundValid = false;
+  let media = null;
+  let newSentMessageId = null;
 
-  if (!media && useAntiRepeat) {
-    const totalCheck = await env.D1.prepare(`SELECT count(*) as c FROM media_library WHERE category_name = ? AND chat_id = ?`).bind(category, chatId).first();
-    if (totalCheck && totalCheck.c > 0) {
-      await env.D1.prepare(`DELETE FROM served_history WHERE media_id IN (SELECT id FROM media_library WHERE category_name = ? AND chat_id = ?)`).bind(category, chatId).run();
-      await tgAPI('sendMessage', { chat_id: output.chat_id, message_thread_id: output.topic_id, text: `🎉 【${category}】的内容全看光了！已重置防重库~` }, env);
-      media = await env.D1.prepare(`SELECT * FROM media_library WHERE category_name = ? AND chat_id = ? ORDER BY RANDOM() LIMIT 1`).bind(category, chatId).first();
+  while (attempts < 3 && !foundValid) {
+    attempts++;
+    
+    // 1. 捞取数据
+    media = useAntiRepeat 
+      ? await env.D1.prepare(`SELECT * FROM media_library WHERE category_name = ? AND chat_id = ? AND id NOT IN (SELECT media_id FROM served_history) ORDER BY RANDOM() LIMIT 1`).bind(category, sourceChatId).first() 
+      : await env.D1.prepare(`SELECT * FROM media_library WHERE category_name = ? AND chat_id = ? ORDER BY RANDOM() LIMIT 1`).bind(category, sourceChatId).first();
+
+    // 如果防重库空了，重置防重库再捞一次
+    if (!media && useAntiRepeat) {
+      const totalCheck = await env.D1.prepare(`SELECT count(*) as c FROM media_library WHERE category_name = ? AND chat_id = ?`).bind(category, sourceChatId).first();
+      if (totalCheck && totalCheck.c > 0) {
+        await env.D1.prepare(`DELETE FROM served_history WHERE media_id IN (SELECT id FROM media_library WHERE category_name = ? AND chat_id = ?)`).bind(category, sourceChatId).run();
+        await tgAPI('sendMessage', { chat_id: outChatId, message_thread_id: outTopicId, text: `🎉 哇哦，【${category}】的内容全看光了！籽青已重置防重库喵~` }, env);
+        media = await env.D1.prepare(`SELECT * FROM media_library WHERE category_name = ? AND chat_id = ? ORDER BY RANDOM() LIMIT 1`).bind(category, sourceChatId).first();
+      }
+    }
+    
+    if (!media) {
+      await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `呜呜，该分类里还没有内容呢喵~` }, env);
+      return;
+    }
+
+    // 2. 原地替换：尝试删除上一次的旧消息卡片
+    if (isNext && nextMode === 'replace' && attempts === 1) {
+      try { await tgAPI('deleteMessage', { chat_id: outChatId, message_id: msgId }, env); } catch (e) {}
+    }
+
+    // 3. 尝试发送给用户 (探活核心)
+    const actionKeyboard = [[{ text: "⏭️ 换一个喵", callback_data: `next_${category}|${sourceChatId}` }, { text: "❤️ 收藏", callback_data: `fav_add_${media.id}` }]];
+    const originalDeepLink = makeDeepLink(media.chat_id, media.message_id);
+
+    let res, data;
+    if (mode === 'A') {
+      res = await tgAPI('forwardMessage', { chat_id: outChatId, message_thread_id: outTopicId, from_chat_id: media.chat_id, message_id: media.message_id }, env);
+      data = await res.json();
+      if(data.ok) {
+        newSentMessageId = data.result.message_id;
+        actionKeyboard.push([{ text: "🏠 呼出主菜单", callback_data: "main_menu_new" }]);
+        await tgAPI('sendMessage', { chat_id: outChatId, message_thread_id: outTopicId, reply_to_message_id: newSentMessageId, text: "👆 可以点这里操作喵：", reply_markup: { inline_keyboard: actionKeyboard } }, env);
+      }
+    } else {
+      actionKeyboard.unshift([{ text: "🔗 去原记录围观", url: originalDeepLink }]);
+      actionKeyboard.push([{ text: "🏠 呼出主菜单", callback_data: "main_menu_new" }]);
+      res = await tgAPI('copyMessage', { chat_id: outChatId, message_thread_id: outTopicId, from_chat_id: media.chat_id, message_id: media.message_id, reply_markup: { inline_keyboard: actionKeyboard } }, env);
+      data = await res.json();
+      if(data.ok) newSentMessageId = data.result.message_id;
+    }
+
+    // 4. 分析探活结果
+    if (data.ok) {
+      foundValid = true; // 发送成功，打断循环！
+    } else {
+      // 🚨 探活失败！清道夫模式启动！
+      const errDesc = data.description || '';
+      console.error("探活报错喵:", errDesc);
+      
+      if (errDesc.includes('chat not found') || errDesc.includes('bot was kicked') || errDesc.includes('channel not found')) {
+        // 炸群/被踢了：一刀切，连坐清理整个群的图库和分类！
+        await env.D1.prepare(`DELETE FROM media_library WHERE chat_id = ?`).bind(media.chat_id).run();
+        await env.D1.prepare(`DELETE FROM config_topics WHERE chat_id = ?`).bind(media.chat_id).run();
+        await env.D1.prepare(`DELETE FROM group_federation WHERE from_chat = ? OR to_chat = ?`).bind(media.chat_id, media.chat_id).run(); // 顺便解散联盟关系
+      } else {
+        // 只是单条消息被撤回或失效：精确删除这一条
+        await env.D1.prepare(`DELETE FROM media_library WHERE id = ?`).bind(media.id).run();
+      }
+      // 继续下一轮循环，自动捞新图...
     }
   }
-  if (!media) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `该分类里还没有内容呢~` }, env);
 
+  // ==== 循环结束后的收尾工作 ====
+  if (!foundValid) {
+    // 如果重试 3 次都抽到了死链，告诉用户让服务器喘口气
+    return tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "🧹 呼... 连续抽到好多失效图片，籽青已经把坏数据打扫干净啦，请主人再点一次重抽喵！", show_alert: true }, env);
+  }
+
+  // 记录健康数据的浏览统计
   if (useAntiRepeat) await env.D1.prepare(`INSERT OR IGNORE INTO served_history (media_id) VALUES (?)`).bind(media.id).run();
   await env.D1.prepare(`INSERT INTO last_served (user_id, last_media_id, served_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET last_media_id=excluded.last_media_id, served_at=excluded.served_at`).bind(userId, media.id, now).run();
   await env.D1.prepare(`UPDATE media_library SET view_count = view_count + 1 WHERE id = ?`).bind(media.id).run();
 
-  const originalDeepLink = makeDeepLink(media.chat_id, media.message_id);
-  const actionKeyboard = [[{ text: "⏭️ 换一个", callback_data: `next_${category}` }, { text: "❤️ 收藏", callback_data: `fav_add_${media.id}` }]];
-  let newSentMessageId = null;
-
-  if (isNext && nextMode === 'replace') {
-    try {
-      await tgAPI('deleteMessage', { chat_id: output.chat_id, message_id: msgId }, env);
-    } catch (e) {}
-  }
-
-  if (mode === 'A') {
-    const res = await tgAPI('forwardMessage', { chat_id: output.chat_id, message_thread_id: output.topic_id, from_chat_id: media.chat_id, message_id: media.message_id }, env);
-    const data = await res.json();
-    if(data.ok) newSentMessageId = data.result.message_id;
-    actionKeyboard.push([{ text: "🏠 呼出主菜单", callback_data: "main_menu_new" }]);
-    await tgAPI('sendMessage', { chat_id: output.chat_id, message_thread_id: output.topic_id, reply_to_message_id: newSentMessageId, text: "👆 操作区：", reply_markup: { inline_keyboard: actionKeyboard } }, env);
-  } else {
-    actionKeyboard.unshift([{ text: "🔗 跳转原记录出处", url: originalDeepLink }]);
-    actionKeyboard.push([{ text: "🏠 呼出主菜单", callback_data: "main_menu_new" }]);
-    const res = await tgAPI('copyMessage', { chat_id: output.chat_id, message_thread_id: output.topic_id, from_chat_id: media.chat_id, message_id: media.message_id, reply_markup: { inline_keyboard: actionKeyboard } }, env);
-    const data = await res.json();
-    if(data.ok) newSentMessageId = data.result.message_id;
-  }
-
-  if (!isNext) {
+  // 成功抽取的反馈提示
+  if (!isNext && chatId < 0) {
     if (showSuccess) {
-      const jumpToOutputLink = newSentMessageId ? makeDeepLink(output.chat_id, newSentMessageId) : null;
+      const jumpToOutputLink = newSentMessageId ? makeDeepLink(outChatId, newSentMessageId) : null;
       const jumpKeyboard = jumpToOutputLink && autoJump 
-        ? [[{ text: "🚀 前往查看", url: jumpToOutputLink }], [{ text: "🏠 返回主菜单", callback_data: "main_menu" }]]
-        : [[{ text: "🏠 返回主菜单", callback_data: "main_menu" }]];
-      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: `🎉 抽取成功啦！已发送至输出话题。`, reply_markup: { inline_keyboard: jumpKeyboard } }, env);
+        ? [[{ text: "🚀 飞去看看", url: jumpToOutputLink }], [{ text: "🏠 返回", callback_data: "main_menu" }]]
+        : [[{ text: "🏠 返回", callback_data: "main_menu" }]];
+      await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: `🎉 抽取成功啦喵！已发送至输出话题。`, reply_markup: { inline_keyboard: jumpKeyboard } }, env);
     } else {
-      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "抽取成功！" }, env);
+      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "抽取成功喵！" }, env);
     }
   }
 }
@@ -383,11 +551,12 @@ async function sendRandomMedia(userId, chatId, msgId, topicId, category, isNext,
 async function showLeaderboard(chatId, msgId, page, env) {
   const limit = 5;
   const offset = page * limit;
-  // 安全限制：只展示本群排行
+  if (chatId > 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "喵，私聊模式暂不支持查看群排行哦，请在群组内使用 QwQ", reply_markup: getBackMarkup() }, env);
+
   const { results } = await env.D1.prepare(`SELECT chat_id, message_id, category_name, view_count, caption FROM media_library WHERE view_count > 0 AND chat_id = ? ORDER BY view_count DESC LIMIT ? OFFSET ?`).bind(chatId, limit, offset).all();
   const totalRes = await env.D1.prepare(`SELECT count(*) as c FROM media_library WHERE view_count > 0 AND chat_id = ?`).bind(chatId).first();
   
-  let text = "🏆 <b>本群浏览量排行榜</b>\n\n";
+  let text = "🏆 **本群浏览量排行榜喵**\n\n";
   if (!results || results.length === 0) {
     text += "当前群组还没有产生播放数据呢~";
   } else {
@@ -410,9 +579,9 @@ async function showLeaderboard(chatId, msgId, page, env) {
 async function handleAddFavorite(userId, cbId, mediaId, env) {
   try { 
     await env.D1.prepare(`INSERT INTO user_favorites (user_id, media_id) VALUES (?, ?)`).bind(userId, mediaId).run(); 
-    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "收藏成功！帮你记下来啦~ ❤️", show_alert: true }, env); 
+    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "收藏成功喵！籽青帮你记下来啦~ ❤️", show_alert: true }, env); 
   } catch (e) { 
-    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "您已经收藏过这个啦~", show_alert: true }, env); 
+    await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "喵？你已经收藏过这个啦~", show_alert: true }, env); 
   }
 }
 
@@ -422,7 +591,7 @@ async function showFavoritesList(chatId, msgId, userId, page, env) {
   const { results } = await env.D1.prepare(`SELECT f.media_id, m.media_type, m.caption FROM user_favorites f LEFT JOIN media_library m ON f.media_id = m.id WHERE f.user_id = ? ORDER BY f.saved_at DESC LIMIT ? OFFSET ?`).bind(userId, limit, offset).all();
   const totalRes = await env.D1.prepare(`SELECT count(*) as c FROM user_favorites WHERE user_id = ?`).bind(userId).first();
   
-  if (!results || results.length === 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "您的收藏夹空空如也哦~", reply_markup: getBackMarkup() }, env);
+  if (!results || results.length === 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "你的收藏夹空空如也哦喵~", reply_markup: getBackMarkup() }, env);
   
   const keyboard = results.map((r, i) => {
     const typeIcon = r.media_type === 'video' ? '🎬' : (r.media_type === 'photo' ? '🖼️' : '📁');
@@ -439,7 +608,7 @@ async function showFavoritesList(chatId, msgId, userId, page, env) {
   if (navRow.length > 0) keyboard.push(navRow);
   keyboard.push([{ text: "🏠 返回主菜单", callback_data: "main_menu" }]);
   
-  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: `📁 **您的私有收藏夹** (共 ${totalRes.c} 条)`, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }, env);
+  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: `📁 **主人的私有收藏夹** (共 ${totalRes.c} 条)`, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }, env);
 }
 
 async function viewFavorite(chatId, topicId, mediaId, env) {
@@ -447,15 +616,16 @@ async function viewFavorite(chatId, topicId, mediaId, env) {
   if (media) await tgAPI('copyMessage', { chat_id: chatId, message_thread_id: topicId, from_chat_id: media.chat_id, message_id: media.message_id }, env);
 }
 
+// ==== V5.5 专属设置看板 (基于 chat_id 获取独立配置) ====
 async function showSettingsMain(chatId, msgId, env) {
-  const mode = await getSetting('display_mode', env);
-  const repeat = await getSetting('anti_repeat', env);
-  const jump = await getSetting('auto_jump', env);
-  const dup = await getSetting('dup_notify', env);
-  const showSuccess = await getSetting('show_success', env);
-  const nextMode = await getSetting('next_mode', env) || 'replace';
+  const mode = await getSetting(chatId, 'display_mode', env);
+  const repeat = await getSetting(chatId, 'anti_repeat', env);
+  const jump = await getSetting(chatId, 'auto_jump', env);
+  const dup = await getSetting(chatId, 'dup_notify', env);
+  const showSuccess = await getSetting(chatId, 'show_success', env);
+  const nextMode = await getSetting(chatId, 'next_mode', env);
   
-  const text = "⚙️ **全局控制面板**\n\n请调整下方的功能开关：";
+  const text = "⚙️ **本群的独立控制面板喵**\n\n请主人调整下方的功能开关：";
   const keyboard = [
     [{ text: `🔀 展现形式: ${mode === 'A' ? 'A(原生转发)' : 'B(复制+链接)'}`, callback_data: "set_toggle_mode" }],
     [{ text: `🔁 防重库机制: ${repeat === 'true' ? '✅ 已开启' : '❌ 未开启'}`, callback_data: "set_toggle_repeat" }],
@@ -470,26 +640,30 @@ async function showSettingsMain(chatId, msgId, env) {
   await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }, env);
 }
 
+// ==== V5.5 更新：保存独立配置 ====
 async function toggleSetting(key, env, chatId, msgId, values) {
-  const current = await getSetting(key, env);
+  const current = await getSetting(chatId, key, env);
   const valCurrent = current === null ? values[0] : current;
   const next = valCurrent === values[0] ? values[1] : values[0];
-  await env.D1.prepare(`UPDATE bot_settings SET value = ? WHERE key = ?`).bind(next, key).run();
+  
+  // 插入带有 chat_id 的设置，遇到冲突就更新 value
+  await env.D1.prepare(`INSERT INTO chat_settings (chat_id, key, value) VALUES (?, ?, ?) ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value`).bind(chatId, key, next).run();
+  
   await showSettingsMain(chatId, msgId, env);
 }
 
 async function showUnbindList(chatId, msgId, env) {
   const { results } = await env.D1.prepare(`SELECT id, chat_title, category_name FROM config_topics WHERE chat_id = ?`).bind(chatId).all();
-  if (!results || results.length === 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "本群目前没有绑定任何记录哦~", reply_markup: { inline_keyboard: [[{text: "返回设置", callback_data: "set_main"}]] } }, env);
+  if (!results || results.length === 0) return tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "本群目前没有绑定任何记录喵~", reply_markup: { inline_keyboard: [[{text: "返回设置", callback_data: "set_main"}]] } }, env);
   const keyboard = results.map(r => [{ text: `🗑️ 解绑 [${r.category_name}]`, callback_data: `set_unbind_do_${r.id}` }]);
   keyboard.push([{ text: "⬅️ 返回设置", callback_data: "set_main" }]);
-  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "点击对应按钮解除本群的话题绑定：", reply_markup: { inline_keyboard: keyboard } }, env);
+  await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text: "点击对应按钮解除本群的话题绑定喵：", reply_markup: { inline_keyboard: keyboard } }, env);
 }
 
 async function showStats(chatId, msgId, env) {
   const mediaCount = (await env.D1.prepare(`SELECT count(*) as c FROM media_library WHERE chat_id = ?`).bind(chatId).first()).c;
   const topicCount = (await env.D1.prepare(`SELECT count(*) as c FROM config_topics WHERE chat_id = ?`).bind(chatId).first()).c;
-  const text = `📊 **本群数据看板**\n\n- 本群收录媒体: **${mediaCount}** 条\n- 本群绑定话题: **${topicCount}** 个`;
+  const text = `📊 **本群数据看板喵**\n\n- 本群收录媒体: **${mediaCount}** 条\n- 本群绑定话题: **${topicCount}** 个`;
   await tgAPI('editMessageText', { chat_id: chatId, message_id: msgId, text, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{text: "⬅️ 返回设置", callback_data: "set_main"}]] } }, env);
 }
 
@@ -497,11 +671,33 @@ function getBackMarkup() {
   return { inline_keyboard: [[{ text: "🏠 返回主菜单", callback_data: "main_menu" }]] };
 }
 
+/* =========================================================================
+ * 工具、API 与 身份鉴权拦截
+ * ========================================================================= */
+async function getUserAllowedGroups(userId, env) {
+  const { results } = await env.D1.prepare(`SELECT DISTINCT chat_id FROM config_topics WHERE chat_id < 0`).all();
+  if (!results || results.length === 0) return [];
+  
+  let allowed = [];
+  for (const row of results) {
+    const inGroup = await isUserInGroup(row.chat_id, userId, env);
+    if (inGroup) allowed.push(row.chat_id);
+  }
+  return allowed;
+}
+
+async function isUserInGroup(groupId, userId, env) {
+  const res = await tgAPI('getChatMember', { chat_id: groupId, user_id: userId }, env);
+  const data = await res.json();
+  if (!data.ok) return false;
+  return ['creator', 'administrator', 'member', 'restricted'].includes(data.result.status);
+}
+
 async function handleExternalImport(dataBatch, env) {
   if (!dataBatch || !Array.isArray(dataBatch)) return;
   const stmts = dataBatch.map(item => {
     return env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      。bind(item.message_id, item.chat_id || 0, item.topic_id || null, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption || '');
+      .bind(item.message_id, item.chat_id || 0, item.topic_id || null, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption || '');
   });
   if (stmts.length > 0) await env.D1.batch(stmts);
 }
@@ -511,16 +707,31 @@ async function tgAPI(method, payload, env) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
   });
 }
-async function getSetting(key, env) {
-  const res = await env.D1.prepare(`SELECT value FROM bot_settings WHERE key = ?`).bind(key).first();
-  return res ? res.value : null;
+
+// ==== V5.5 更新：支持基于 Chat ID 读取独立默认配置 ====
+async function getSetting(chatId, key, env) {
+  const res = await env.D1.prepare(`SELECT value FROM chat_settings WHERE chat_id = ? AND key = ?`).bind(chatId, key).first();
+  if (res) return res.value;
+  
+  // 如果群组没有设置过，就返回默认值喵
+  const defaults = {
+    'display_mode': 'B',
+    'anti_repeat': 'true',
+    'auto_jump': 'true',
+    'dup_notify': 'false',
+    'show_success': 'true',
+    'next_mode': 'replace'
+  };
+  return defaults[key] || null;
 }
+
 async function isAdmin(chatId, userId, env) {
   if (chatId > 0) return true;
   const res = await tgAPI('getChatMember', { chat_id: chatId, user_id: userId }, env);
   const data = await res.json();
   return data.ok && (data.result.status === 'administrator' || data.result.status === 'creator');
 }
+
 function makeDeepLink(chatId, messageId) {
   return `https://t.me/c/${String(chatId).replace('-100', '')}/${messageId}`;
 }
