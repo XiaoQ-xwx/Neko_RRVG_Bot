@@ -25,7 +25,7 @@
 - 前往 Telegram 联系 [@BotFather](https://t.me/BotFather) 获取 **Bot Token**。
 - 将 Bot 邀请至你的目标群组，并**给予管理员权限**。
 
-### 2. Cloudflare 环境配置
+### 2. Cloudflare 部署
 - 创建一个新的 Cloudflare Worker。
 - 创建一个 D1 数据库，并在 Worker 的 `Integrations` 中绑定，变量名必须填写为 `D1`。
 - 在 Worker 的 `Variables and Secrets` 中添加以下环境变量：
@@ -49,5 +49,5 @@
 
 1. **内置直导 (适合 5MB 以内文件)**：
    直接在群内向机器人发送导出的 JSON 文件，并在消息配文中附带 `/import <分类名>` 指令，机器人会自动解析并入库。
-2. **外部 Python 脚本 (适合超大库，无限制)**：
+2. **外部 Python 脚本 (未测试！！！适合超大库，无限制)**：
    使用项目配套的 `import_history.py` 脚本，在本地进行分批切割推送，绕过 Worker 内存与时长限制（详见脚本内注释）。
