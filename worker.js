@@ -113,6 +113,30 @@ export default {
         return new Response(JSON.stringify({ status: 'success', count: payload.data.length }), { status: 200 });
       }
 
+      // 🌟 V5.9: 批量更新视频时长 API
+      if (request.method === 'POST' && url.pathname === '/api/update_duration') {
+        const secret = request.headers.get('Authorization');
+        if (env.ADMIN_SECRET && secret !== env.ADMIN_SECRET) return new Response('Unauthorized', { status: 401 });
+        const payload = await request.json();
+        const updates = payload.updates || [];
+        if (!Array.isArray(updates) || updates.length === 0) {
+          return new Response(JSON.stringify({ status: 'error', message: 'No updates provided' }), { status: 400 });
+        }
+        let updatedCount = 0;
+        // 每批 50 条
+        for (let i = 0; i < updates.length; i += 50) {
+          const batch = updates.slice(i, i + 50);
+          const stmts = batch.map(item => {
+            return env.D1.prepare(
+              `UPDATE media_library SET duration = ? WHERE message_id = ? AND chat_id = ? AND duration IS NULL`
+            ).bind(item.duration, item.message_id, item.chat_id);
+          });
+          const results = await env.D1.batch(stmts);
+          updatedCount += results.filter(r => r.meta?.changes > 0).length;
+        }
+        return new Response(JSON.stringify({ status: 'success', updated: updatedCount }), { status: 200 });
+      }
+
       return new Response('Not Found', { status: 404 });
     } catch (err) {
       console.error('Worker Error:', err);
@@ -141,10 +165,10 @@ async function handleSetup(origin, env) {
       `CREATE INDEX IF NOT EXISTS idx_media_chat_viewcount ON media_library (chat_id, view_count DESC);`,
       `CREATE INDEX IF NOT EXISTS idx_topics_chat_cat ON config_topics (chat_id, category_name);`,
       `CREATE INDEX IF NOT EXISTS idx_served_history_media ON served_history (media_id);`,
-      // 🌟 V5.9: 过滤器相关索引
+      // 🌟 V5.9: 过滤器相关索引（不依赖 duration 列的索引）
       `CREATE INDEX IF NOT EXISTS idx_user_filters_chat_user ON user_filters (chat_id, user_id);`,
       `CREATE INDEX IF NOT EXISTS idx_media_chat_cat_added ON media_library (chat_id, category_name, added_at DESC);`,
-      `CREATE INDEX IF NOT EXISTS idx_media_chat_cat_duration ON media_library (chat_id, category_name, duration);`,
+      // 注意：idx_media_chat_cat_duration 索引移至列迁移之后创建
       
       `CREATE TABLE IF NOT EXISTS user_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chat_id INTEGER, media_id INTEGER, viewed_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
       `CREATE TABLE IF NOT EXISTS group_history (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, media_id INTEGER, viewed_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
@@ -190,6 +214,14 @@ async function handleSetup(origin, env) {
         const msg = String(e?.message || '');
         if (!/duplicate column|already exists/i.test(msg)) console.error(`列迁移失败: ${col.name}`, msg);
       }
+    }
+
+    // 🌟 V5.9: duration 列相关索引（必须在列迁移之后创建）
+    try {
+      await env.D1.prepare(`CREATE INDEX IF NOT EXISTS idx_media_chat_cat_duration ON media_library (chat_id, category_name, duration);`).run();
+    } catch (e) {
+      // 索引已存在或其他非致命错误，静默忽略
+      console.warn('duration 索引创建跳过:', e?.message);
     }
 
     const webhookUrl = `${origin}/webhook`;
@@ -407,8 +439,9 @@ async function handleMessage(message, env, ctx) {
       }, env);
     }
 
+    // 🌟 V5.9: 增强查询，加入 duration 和 view_count
     const { results: mediaRecords } = await env.D1.prepare(
-      `SELECT id, message_id, topic_id, category_name, media_type, added_at FROM media_library WHERE file_unique_id = ? AND chat_id = ? ORDER BY added_at ASC`
+      `SELECT id, message_id, topic_id, category_name, media_type, duration, view_count, added_at FROM media_library WHERE file_unique_id = ? AND chat_id = ? ORDER BY added_at ASC`
     ).bind(info.fileUniqueId, chatId).all();
 
     if (!mediaRecords || mediaRecords.length === 0) {
@@ -428,24 +461,62 @@ async function handleMessage(message, env, ctx) {
       for (const row of (topicRows || [])) topicNameMap[row.topic_id] = row.category_name;
     }
 
+    // 🌟 V5.9: 从原消息提取文件大小
+    const replyMsg = message.reply_to_message;
+    let fileSize = null;
+    if (replyMsg.video?.file_size) fileSize = replyMsg.video.file_size;
+    else if (replyMsg.animation?.file_size) fileSize = replyMsg.animation.file_size;
+    else if (replyMsg.document?.file_size) fileSize = replyMsg.document.file_size;
+    else if (replyMsg.photo?.length > 0) fileSize = replyMsg.photo[replyMsg.photo.length - 1].file_size;
+
+    // 格式化文件大小
+    const formatSize = (bytes) => {
+      if (!bytes) return null;
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+      return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    };
+
+    // 格式化时长
+    const formatDuration = (sec) => {
+      if (sec == null) return null;
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+    };
+
     const chatIdNum = String(chatId).replace(/^-100/, '');
-    const typeLabel = { photo: '图片', video: '视频', animation: 'GIF', document: '文件' };
+    const typeLabel = { photo: '🖼️ 图片', video: '🎬 视频', animation: '🎠 GIF', document: '📄 文件' };
+
+    // 🌟 V5.9: 构建媒体概要信息（从第一条记录和原消息获取）
+    const firstRec = mediaRecords[0];
+    const mediaType = typeLabel[firstRec.media_type] || firstRec.media_type || '未知';
+    const sizePart = fileSize ? `📦 大小：${formatSize(fileSize)}` : '';
+    const durationPart = firstRec.duration != null ? `⏱ 时长：${formatDuration(firstRec.duration)}` : '';
+    const totalViews = mediaRecords.reduce((sum, r) => sum + (r.view_count || 0), 0);
+
+    let summaryLine = `📊 *媒体概要*\n${mediaType}`;
+    if (sizePart) summaryLine += ` | ${sizePart}`;
+    if (durationPart) summaryLine += ` | ${durationPart}`;
+    summaryLine += `\n👁 总浏览：${totalViews} 次`;
+
     const lines = mediaRecords.map((rec, idx) => {
       const topicBound = rec.topic_id ? (topicNameMap[rec.topic_id] || '未知话题') : '无话题';
-      const type = typeLabel[rec.media_type] || rec.media_type || '未知';
       const addedAt = rec.added_at ? String(rec.added_at).replace('T', ' ').substring(0, 16) : '未知时间';
       const link = rec.message_id
         ? (rec.topic_id
             ? `https://t.me/c/${chatIdNum}/${rec.topic_id}/${rec.message_id}`
             : `https://t.me/c/${chatIdNum}/${rec.message_id}`)
         : null;
-      const linkPart = link ? ` — [原消息](${link})` : '';
-      return `*${idx + 1}.* 分类：\`${rec.category_name}\` | 话题：\`${topicBound}\`\n　类型：${type} | 收录于：${addedAt}${linkPart}`;
+      const linkPart = link ? ` [📎](${link})` : '';
+      const viewPart = rec.view_count > 0 ? ` | 👁 ${rec.view_count}` : '';
+      return `*${idx + 1}.* \`${rec.category_name}\` → ${topicBound}${viewPart}\n　　${addedAt}${linkPart}`;
     });
 
     return tgAPI('sendMessage', {
       chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.reply_to_message.message_id,
-      text: `🔍 *籽青找到了 ${mediaRecords.length} 条收录记录喵～*\n\n${lines.join('\n\n')}`,
+      text: `🔍 *籽青找到了 ${mediaRecords.length} 条收录记录喵～*\n\n${summaryLine}\n\n━━━━━━━━━━━━━━━━\n📋 *收录详情*\n${lines.join('\n')}`,
       parse_mode: 'Markdown', disable_web_page_preview: true
     }, env);
   }
@@ -742,13 +813,19 @@ async function handleMessage(message, env, ctx) {
   if (mediaInfo.fileUniqueId) {
     const query = await env.D1.prepare(`SELECT category_name FROM config_topics WHERE chat_id = ? AND (topic_id = ? OR topic_id IS NULL) AND category_name != 'output' LIMIT 1`).bind(chatId, topicId).first();
     if (query && query.category_name) {
-      const existing = await env.D1.prepare(`SELECT id FROM media_library WHERE file_unique_id = ? AND chat_id = ? LIMIT 1`).bind(mediaInfo.fileUniqueId, chatId).first();
+      const existing = await env.D1.prepare(`SELECT id, duration FROM media_library WHERE file_unique_id = ? AND chat_id = ? LIMIT 1`).bind(mediaInfo.fileUniqueId, chatId).first();
       if (existing) {
+        // 🌟 V5.9: 渐进式补全 duration（如果原记录没有，从新消息中获取）
+        if (existing.duration === null && mediaInfo.duration !== null) {
+          ctx.waitUntil(
+            env.D1.prepare(`UPDATE media_library SET duration = ? WHERE id = ?`).bind(mediaInfo.duration, existing.id).run()
+          );
+        }
         const notify = await getSetting(chatId, 'dup_notify', env);
         if (notify === 'true') {
           await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id, text: "哎呀,籽青发现这个内容之前已经收录过啦喵~" }, env);
         }
-        return; 
+        return;
       }
       await env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(message.message_id, chatId, topicId, query.category_name, mediaInfo.fileUniqueId, mediaInfo.fileId, mediaInfo.type, message.caption || '', mediaInfo.duration ?? null).run();
