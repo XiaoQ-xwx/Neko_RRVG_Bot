@@ -1,0 +1,19 @@
+# Wrangler
+wrangler.toml
+.wrangler/
+.dev.vars
+
+# Python
+__pycache__/
+*.pyc
+
+# Playwright MCP
+.playwright-mcp/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

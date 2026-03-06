@@ -1843,78 +1843,181 @@ function getWebAppHTML() {
           --tg-theme-button-color: #ff758c;
           --tg-theme-button-text-color: #ffffff;
           --tg-theme-secondary-bg-color: #e5e7eb;
+          --tg-theme-hint-color: rgba(34, 34, 34, 0.6);
+          --tg-theme-border-color: rgba(0, 0, 0, 0.08);
+          --tg-theme-destructive-color: #ff4d4f;
+          --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+          --page-padding: 20px;
+          --card-radius: 18px;
+          --chip-radius: 999px;
+          --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.08);
         }
-        body { font-family: system-ui, -apple-system, sans-serif; background-color: var(--tg-theme-bg-color); color: var(--tg-theme-text-color); margin: 0; padding: 0; padding-bottom: 70px; transition: background-color 0.3s, color 0.3s; }
-        .header { padding: 20px; background: linear-gradient(135deg, #ff758c 0%, #ff7eb3 100%); color: white; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px; box-shadow: 0 4px 15px rgba(255, 117, 140, 0.3); }
-        .header h1 { margin: 0; font-size: 24px; font-weight: bold; }
-        .header p { margin: 5px 0 0; opacity: 0.9; font-size: 14px; }
-        .tab-content { display: none; padding: 20px; animation: fadeIn 0.3s ease; }
+        * { box-sizing: border-box; }
+        body {
+          font-family: system-ui, -apple-system, sans-serif;
+          background-color: var(--tg-theme-bg-color);
+          color: var(--tg-theme-text-color);
+          margin: 0;
+          padding: 0 0 calc(88px + var(--safe-area-bottom));
+          transition: background-color 0.3s, color 0.3s;
+        }
+        .header {
+          padding: 24px var(--page-padding) 18px;
+          background: linear-gradient(135deg, var(--tg-theme-button-color) 0%, #ff7eb3 100%);
+          color: #ffffff;
+          border-bottom-left-radius: 24px;
+          border-bottom-right-radius: 24px;
+          box-shadow: 0 10px 30px rgba(255, 117, 140, 0.25);
+        }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 800; }
+        .header p { margin: 6px 0 0; opacity: 0.92; font-size: 14px; }
+        .hero-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+        .hero-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 12px;
+          border-radius: var(--chip-radius);
+          background: rgba(255, 255, 255, 0.18);
+          backdrop-filter: blur(6px);
+          font-size: 12px;
+          font-weight: 700;
+        }
+        .tab-content { display: none; padding: var(--page-padding); animation: fadeIn 0.25s ease; }
         .tab-content.active { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .card { background-color: var(--tg-theme-secondary-bg-color); border-radius: 16px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
-        .card h3 { margin-top: 0; margin-bottom: 10px; font-size: 16px; display: flex; align-items: center; gap: 8px;}
-        .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; height: 65px; background-color: var(--tg-theme-secondary-bg-color); display: flex; justify-content: space-around; align-items: center; border-top-left-radius: 20px; border-top-right-radius: 20px; box-shadow: 0 -2px 15px rgba(0,0,0,0.05); z-index: 1000;}
-        .nav-item { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 25%; height: 100%; color: var(--tg-theme-text-color); opacity: 0.6; text-decoration: none; font-size: 12px; font-weight: bold; transition: all 0.2s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .card {
+          background-color: var(--tg-theme-secondary-bg-color);
+          border-radius: var(--card-radius);
+          padding: 16px;
+          margin-bottom: 16px;
+          box-shadow: var(--shadow-soft);
+        }
+        .card h3 {
+          margin: 0;
+          font-size: 16px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .section-title { display: flex; align-items: center; gap: 8px; }
+        .section-subtitle { margin-top: 6px; color: var(--tg-theme-hint-color); font-size: 12px; line-height: 1.5; }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+        .stat-item { padding: 14px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.35); text-align: center; }
+        .stat-item b { display: block; font-size: 22px; line-height: 1.1; margin-bottom: 6px; }
+        .stat-item span { font-size: 12px; color: var(--tg-theme-hint-color); font-weight: 700; }
+        .leaderboard-list { margin: 14px 0 0; padding: 0; list-style: none; }
+        .leaderboard-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px dashed var(--tg-theme-border-color); }
+        .leaderboard-item:last-child { border-bottom: none; }
+        .leaderboard-user { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .leaderboard-rank { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.4); font-size: 14px; }
+        .leaderboard-name { font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .leaderboard-count { font-size: 13px; font-weight: 800; }
+        .section-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+        .section-count { color: var(--tg-theme-hint-color); font-size: 12px; font-weight: 700; }
+        .gallery-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .history-list { display: flex; flex-direction: column; gap: 12px; }
+        .media-card { background: rgba(255, 255, 255, 0.35); border-radius: 14px; padding: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04); transition: transform 0.2s ease, opacity 0.2s ease, margin 0.2s ease; overflow: hidden; }
+        .media-card.is-removing { opacity: 0; transform: scale(0.95); margin-top: 0; margin-bottom: 0; }
+        .media-card-top { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+        .media-icon { width: 40px; height: 40px; border-radius: 12px; background: rgba(255,255,255,0.5); display: inline-flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+        .media-body { min-width: 0; flex: 1; }
+        .media-title { font-size: 13px; font-weight: 800; line-height: 1.4; margin: 0; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .media-meta { margin-top: 6px; font-size: 11px; color: var(--tg-theme-hint-color); display: flex; flex-wrap: wrap; gap: 6px; }
+        .meta-badge { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: var(--chip-radius); background: rgba(255,255,255,0.5); }
+        .media-actions { display: flex; gap: 8px; }
+        .media-btn { flex: 1; border: none; border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 800; cursor: pointer; transition: transform 0.15s ease, opacity 0.15s ease; }
+        .media-btn:active { transform: scale(0.97); opacity: 0.86; }
+        .media-btn-primary { background: var(--tg-theme-button-color); color: var(--tg-theme-button-text-color); }
+        .media-btn-danger { flex: 0 0 42px; background: var(--tg-theme-destructive-color); color: #ffffff; }
+        .setting-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+        .setting-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.35); }
+        .setting-item strong { display: block; font-size: 14px; }
+        .setting-item span { display: block; margin-top: 4px; font-size: 12px; color: var(--tg-theme-hint-color); }
+        .setting-value { color: var(--tg-theme-text-color); font-size: 12px; font-weight: 800; text-align: right; }
+        .state-block { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 160px; text-align: center; color: var(--tg-theme-hint-color); padding: 16px; border-radius: 14px; background: rgba(255, 255, 255, 0.3); }
+        .state-icon { font-size: 36px; }
+        .state-title { font-size: 14px; font-weight: 800; color: var(--tg-theme-text-color); }
+        .state-desc { font-size: 12px; line-height: 1.6; }
+        .skeleton-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .skeleton-list { display: flex; flex-direction: column; gap: 12px; }
+        .skeleton-card, .skeleton-row { border-radius: 14px; background: linear-gradient(90deg, rgba(255,255,255,0.25) 25%, rgba(255,255,255,0.55) 50%, rgba(255,255,255,0.25) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite linear; }
+        .skeleton-card { height: 120px; }
+        .skeleton-row { height: 74px; }
+        .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; height: calc(70px + var(--safe-area-bottom)); padding-bottom: var(--safe-area-bottom); background-color: var(--tg-theme-secondary-bg-color); display: flex; justify-content: space-around; align-items: center; border-top-left-radius: 22px; border-top-right-radius: 22px; box-shadow: 0 -2px 15px rgba(0,0,0,0.06); z-index: 1000; }
+        .nav-item { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 25%; height: 100%; color: var(--tg-theme-text-color); opacity: 0.62; text-decoration: none; font-size: 12px; font-weight: 800; transition: all 0.2s; }
         .nav-item.active { opacity: 1; color: var(--tg-theme-button-color); transform: translateY(-2px); }
-        .nav-icon { font-size: 24px; margin-bottom: 4px; }
-        .gallery-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 15px; }
-        .gallery-item { background: var(--tg-theme-bg-color); border-radius: 12px; padding: 12px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .gallery-icon { font-size: 28px; margin-bottom: 8px; }
-        .gallery-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 10px; font-weight: bold;}
-        .gallery-btn { background: var(--tg-theme-button-color); color: var(--tg-theme-button-text-color); border: none; border-radius: 8px; padding: 6px 0; font-size: 12px; cursor: pointer; width: 100%; font-weight: bold;}
-        .top-user-li { display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px dashed rgba(0,0,0,0.1); padding-bottom: 4px; }
+        .nav-icon { font-size: 22px; margin-bottom: 4px; }
+        @media (max-width: 360px) { .gallery-grid { grid-template-columns: 1fr; } }
       </style>
     </head>
     <body>
       <div class="header">
         <h1>🐾 籽青控制台</h1>
         <p id="welcome-text">正在连接神经元...</p>
+        <div class="hero-chips">
+          <div class="hero-chip">Telegram WebApp</div>
+          <div class="hero-chip" id="hero-theme-chip">主题同步中</div>
+          <div class="hero-chip" id="hero-env-chip">等待识别环境</div>
+        </div>
       </div>
 
       <div id="tab-dashboard" class="tab-content active">
         <div class="card">
-          <h3>📊 全局核心数据</h3>
-          <div style="display:flex; justify-content: space-between; margin-top: 15px;">
-            <div style="text-align:center;"><b id="stat-media" style="font-size: 18px;">--</b><br><small>收录</small></div>
-            <div style="text-align:center;"><b id="stat-views" style="font-size: 18px;">--</b><br><small>浏览</small></div>
-            <div style="text-align:center;"><b id="stat-anti" style="font-size: 18px;">--</b><br><small>防重拦截</small></div>
-            <div style="text-align:center;"><b id="stat-groups" style="font-size: 18px;">--</b><br><small>群组</small></div>
+          <h3><span class="section-title">📊 全局核心数据</span></h3>
+          <div class="section-subtitle">这里展示全局收录体量、浏览热度与防重统计喵～</div>
+          <div class="stats-grid">
+            <div class="stat-item"><b id="stat-media">--</b><span>收录</span></div>
+            <div class="stat-item"><b id="stat-views">--</b><span>浏览</span></div>
+            <div class="stat-item"><b id="stat-anti">--</b><span>防重拦截</span></div>
+            <div class="stat-item"><b id="stat-groups">--</b><span>群组</span></div>
           </div>
         </div>
         <div class="card">
-          <h3>🏆 全局最高活跃排名</h3>
-          <ul id="top-users-list" style="margin: 0; padding-left: 0; font-size: 13px; list-style: none;">
-            <li>正在拉取排行喵...</li>
+          <h3><span class="section-title">🏆 全局最高活跃排名</span></h3>
+          <div class="section-subtitle">最近的高活跃用户会出现在这里喵～</div>
+          <ul id="top-users-list" class="leaderboard-list">
+            <li class="leaderboard-item"><span>正在拉取排行喵...</span></li>
           </ul>
         </div>
       </div>
 
       <div id="tab-settings" class="tab-content">
         <div class="card">
-          <h3>⚙️ 高级配置</h3>
-          <p>施工中喵！</p>
-          <button style="width: 100%; padding: 12px; border: none; border-radius: 10px; background: var(--tg-theme-button-color); color: var(--tg-theme-button-text-color); font-weight: bold;">测试按钮 (暂无功能)</button>
+          <h3><span class="section-title">⚙️ 控制台信息</span></h3>
+          <div class="section-subtitle">这里展示当前账户、界面环境与数据摘要，不会修改任何设置喵～</div>
+          <div id="settings-container" class="setting-list"></div>
         </div>
       </div>
 
       <div id="tab-gallery" class="tab-content">
         <div class="card">
-          <h3>🖼️ 我的私人画廊</h3>
-          <div id="gallery-container" class="gallery-grid">
-            <p style="grid-column: span 2; text-align: center; font-size: 13px; opacity: 0.6;">正在向籽青请求数据喵...</p>
+          <div class="section-header">
+            <div>
+              <h3><span class="section-title">🖼️ 我的私人画廊</span></h3>
+              <div class="section-subtitle">双列卡片更适合快速浏览收藏内容喵～</div>
+            </div>
+            <div id="gallery-count" class="section-count">--</div>
           </div>
+          <div id="gallery-container" class="gallery-grid"></div>
         </div>
       </div>
-      
-       <div id="tab-history" class="tab-content">
+
+      <div id="tab-history" class="tab-content">
         <div class="card">
-          <h3>📜 我的全局足迹</h3>
-          <div id="history-container" class="gallery-grid">
-            <p style="grid-column: span 2; text-align: center; font-size: 13px; opacity: 0.6;">正在向籽青请求数据喵...</p>
+          <div class="section-header">
+            <div>
+              <h3><span class="section-title">📜 我的全局足迹</span></h3>
+              <div class="section-subtitle">单列时间线更方便回看最近浏览记录喵～</div>
+            </div>
+            <div id="history-count" class="section-count">--</div>
           </div>
+          <div id="history-container" class="history-list"></div>
         </div>
       </div>
-      
+
       <div class="bottom-nav">
         <div class="nav-item active" onclick="switchTab('dashboard', this)">
           <div class="nav-icon">📊</div><span>看板</span>
@@ -1931,35 +2034,321 @@ function getWebAppHTML() {
       </div>
 
       <script>
-        const tg = window.Telegram.WebApp;
-        tg.expand(); 
-        tg.ready();  
+        const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+        const docEl = document.documentElement;
+        const viewState = { favorites: [], history: [] };
 
-        // 适配 Telegram 原生主题色
-        document.documentElement.style.setProperty('--tg-theme-bg-color', tg.themeParams.bg_color || '#f3f4f6');
-        document.documentElement.style.setProperty('--tg-theme-text-color', tg.themeParams.text_color || '#222222');
-        document.documentElement.style.setProperty('--tg-theme-button-color', tg.themeParams.button_color || '#ff758c');
-        document.documentElement.style.setProperty('--tg-theme-button-text-color', tg.themeParams.button_text_color || '#ffffff');
-        document.documentElement.style.setProperty('--tg-theme-secondary-bg-color', tg.themeParams.secondary_bg_color || '#e5e7eb');
+        function ensureTelegramCapability() {
+          return {
+            hasTg: !!tg,
+            canOpenLink: !!(tg && tg.openTelegramLink),
+            canHaptic: !!(tg && tg.HapticFeedback),
+            canAlert: !!(tg && tg.showAlert)
+          };
+        }
 
-        const user = tg.initDataUnsafe?.user;
-        if (user) {
-          document.getElementById('welcome-text').innerText = '欢迎回来, ' + (user.first_name || '主人') + ' 喵！';
-          fetchAppData(user.id);
-        } else {
-          document.getElementById('welcome-text').innerText = '请在 Telegram 客户端内打开喵！';
-          document.getElementById('gallery-container').innerHTML = '<p style="grid-column: span 2; text-align: center; font-size: 13px; opacity: 0.6;">环境异常，无法获取身份信息</p>';
+        const capabilities = ensureTelegramCapability();
+        if (capabilities.hasTg) {
+          tg.expand();
+          tg.ready();
+        }
+
+        docEl.style.setProperty('--tg-theme-bg-color', tg && tg.themeParams.bg_color || '#f3f4f6');
+        docEl.style.setProperty('--tg-theme-text-color', tg && tg.themeParams.text_color || '#222222');
+        docEl.style.setProperty('--tg-theme-button-color', tg && tg.themeParams.button_color || '#ff758c');
+        docEl.style.setProperty('--tg-theme-button-text-color', tg && tg.themeParams.button_text_color || '#ffffff');
+        docEl.style.setProperty('--tg-theme-secondary-bg-color', tg && tg.themeParams.secondary_bg_color || '#e5e7eb');
+        docEl.style.setProperty('--tg-theme-hint-color', tg && tg.themeParams.hint_color || 'rgba(34, 34, 34, 0.6)');
+        docEl.style.setProperty('--tg-theme-border-color', 'rgba(0, 0, 0, 0.08)');
+
+        const els = {
+          welcomeText: document.getElementById('welcome-text'),
+          heroThemeChip: document.getElementById('hero-theme-chip'),
+          heroEnvChip: document.getElementById('hero-env-chip'),
+          statMedia: document.getElementById('stat-media'),
+          statViews: document.getElementById('stat-views'),
+          statAnti: document.getElementById('stat-anti'),
+          statGroups: document.getElementById('stat-groups'),
+          topUsersList: document.getElementById('top-users-list'),
+          settingsContainer: document.getElementById('settings-container'),
+          galleryContainer: document.getElementById('gallery-container'),
+          historyContainer: document.getElementById('history-container'),
+          galleryCount: document.getElementById('gallery-count'),
+          historyCount: document.getElementById('history-count')
+        };
+
+        function escapeHTML(value) {
+          return String(value ?? '').replace(/[&<>"']/g, function(ch) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] || ch;
+          });
+        }
+
+        function safeText(value, fallback) {
+          const text = String(value ?? '').trim();
+          return text || fallback;
+        }
+
+        function getMediaIcon(mediaType) {
+          if (mediaType === 'video') return '🎬';
+          if (mediaType === 'photo') return '🖼️';
+          if (mediaType === 'animation') return '✨';
+          return '📁';
+        }
+
+        function getMediaLabel(mediaType) {
+          if (mediaType === 'video') return '视频';
+          if (mediaType === 'photo') return '图片';
+          if (mediaType === 'animation') return '动图';
+          return '文件';
+        }
+
+        function buildTelegramDeepLink(chatId, messageId) {
+          if (!chatId || !messageId) return '';
+          return 'https://t.me/c/' + String(chatId).replace('-100', '') + '/' + messageId;
+        }
+
+        function setImpact(type) {
+          if (!capabilities.canHaptic) return;
+          if (type === 'selection' && tg.HapticFeedback.selectionChanged) {
+            tg.HapticFeedback.selectionChanged();
+            return;
+          }
+          if (type === 'success' && tg.HapticFeedback.notificationOccurred) {
+            tg.HapticFeedback.notificationOccurred('success');
+            return;
+          }
+          if (type === 'error' && tg.HapticFeedback.notificationOccurred) {
+            tg.HapticFeedback.notificationOccurred('error');
+            return;
+          }
+          if (tg.HapticFeedback.impactOccurred) tg.HapticFeedback.impactOccurred('medium');
+        }
+
+        function showAlert(message) {
+          if (capabilities.canAlert) {
+            tg.showAlert(message);
+          } else {
+            alert(message);
+          }
+        }
+
+        function buildStateBlock(icon, title, desc) {
+          return '<div class="state-block">' +
+            '<div class="state-icon">' + escapeHTML(icon) + '</div>' +
+            '<div class="state-title">' + escapeHTML(title) + '</div>' +
+            '<div class="state-desc">' + escapeHTML(desc) + '</div>' +
+          '</div>';
+        }
+
+        function buildSkeletonMarkup(kind) {
+          if (kind === 'history') {
+            return '<div class="skeleton-list"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+          }
+          return '<div class="skeleton-grid"><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div></div>';
+        }
+
+        function setSectionState(container, state, options) {
+          const opts = options || {};
+          if (state === 'loading') {
+            container.innerHTML = buildSkeletonMarkup(opts.kind);
+            return;
+          }
+          if (state === 'error') {
+            container.innerHTML = buildStateBlock('⚠️', opts.title || '连接失败了喵', opts.desc || '请稍后再试试');
+            return;
+          }
+          container.innerHTML = buildStateBlock(opts.icon || '📭', opts.title || '这里还是空的喵', opts.desc || '暂时没有可显示的数据');
+        }
+
+        function normalizeMediaItem(item, kind) {
+          const recordId = kind === 'favorite' ? (item.media_id ?? item.id) : (item.hist_id ?? item.id);
+          return {
+            kind,
+            recordId: recordId ?? 0,
+            cardId: (kind === 'favorite' ? 'fav-item-' : 'hist-item-') + (recordId ?? 0),
+            caption: safeText(item.caption, kind === 'favorite' ? '已收藏记录' : '已看记录'),
+            mediaType: safeText(item.media_type, 'file'),
+            mediaLabel: getMediaLabel(item.media_type),
+            icon: getMediaIcon(item.media_type),
+            chatId: item.chat_id,
+            messageId: item.message_id,
+            deepLink: buildTelegramDeepLink(item.chat_id, item.message_id)
+          };
+        }
+
+        function normalizeWebAppData(raw) {
+          const favorites = Array.isArray(raw && raw.favorites) ? raw.favorites.map(function(item) { return normalizeMediaItem(item, 'favorite'); }) : [];
+          const history = Array.isArray(raw && raw.history) ? raw.history.map(function(item) { return normalizeMediaItem(item, 'history'); }) : [];
+          return {
+            dashboard: raw && raw.dashboard ? raw.dashboard : {},
+            topUsers: Array.isArray(raw && raw.top_users) ? raw.top_users : [],
+            favorites,
+            history
+          };
+        }
+
+        function renderDashboard(dashboard) {
+          els.statMedia.innerText = dashboard.total_media ?? 0;
+          els.statViews.innerText = dashboard.total_views ?? 0;
+          els.statGroups.innerText = dashboard.total_groups ?? 0;
+          els.statAnti.innerText = dashboard.total_anti ?? 0;
+        }
+
+        function renderTopUsers(users) {
+          if (!users.length) {
+            els.topUsersList.innerHTML = '<li class="leaderboard-item"><span>暂无数据喵</span></li>';
+            return;
+          }
+          els.topUsersList.innerHTML = users.map(function(u, i) {
+            const medals = ['🥇', '🥈', '🥉'];
+            const rank = medals[i] || ('#' + (i + 1));
+            return '<li class="leaderboard-item">' +
+              '<div class="leaderboard-user">' +
+                '<span class="leaderboard-rank">' + escapeHTML(rank) + '</span>' +
+                '<span class="leaderboard-name">' + escapeHTML(safeText(u.first_name, '神秘人')) + '</span>' +
+              '</div>' +
+              '<b class="leaderboard-count">' + escapeHTML(String(u.c ?? 0)) + ' 次</b>' +
+            '</li>';
+          }).join('');
+        }
+
+        function updateSectionMeta(section, count) {
+          const text = count + ' 条';
+          if (section === 'gallery') els.galleryCount.innerText = text;
+          if (section === 'history') els.historyCount.innerText = text;
+        }
+
+        function renderSettingsView(payload) {
+          const rows = [
+            { title: '账户', desc: safeText(payload.userName, '未识别 Telegram 用户') + ' · ID ' + safeText(payload.userId, '--'), value: payload.source },
+            { title: '界面', desc: '主题色、按钮色与背景色都已同步到当前客户端', value: payload.themeLabel },
+            { title: '数据', desc: '收藏 ' + payload.favoriteCount + ' 条 · 足迹 ' + payload.historyCount + ' 条', value: payload.refreshedAt },
+            { title: '说明', desc: '这里只展示当前环境和摘要信息，不会直接修改设置', value: payload.envLabel }
+          ];
+          els.settingsContainer.innerHTML = rows.map(function(row) {
+            return '<div class="setting-item">' +
+              '<div><strong>' + escapeHTML(row.title) + '</strong><span>' + escapeHTML(row.desc) + '</span></div>' +
+              '<div class="setting-value">' + escapeHTML(row.value) + '</div>' +
+            '</div>';
+          }).join('');
+        }
+
+        function renderMediaCard(item) {
+          const action = item.kind === 'favorite'
+            ? 'removeFav(' + item.recordId + ', this)'
+            : 'removeHist(' + item.recordId + ', this)';
+          const openAction = item.deepLink
+            ? 'openMediaLink(&#39;' + item.deepLink.replace(/'/g, '&#39;') + '&#39;)'
+            : 'showAlert(&#39;当前记录缺少跳转链接喵&#39;)';
+          const meta = [
+            '<span class="meta-badge">' + escapeHTML(item.mediaLabel) + '</span>',
+            '<span class="meta-badge">ID ' + escapeHTML(String(item.recordId)) + '</span>'
+          ].join('');
+          return '<div class="media-card" id="' + escapeHTML(item.cardId) + '">' +
+            '<div class="media-card-top">' +
+              '<div class="media-icon">' + escapeHTML(item.icon) + '</div>' +
+              '<div class="media-body">' +
+                '<p class="media-title">' + escapeHTML(item.caption) + '</p>' +
+                '<div class="media-meta">' + meta + '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="media-actions">' +
+              '<button class="media-btn media-btn-primary" onclick="' + openAction + '">👀 围观</button>' +
+              '<button class="media-btn media-btn-danger" onclick="' + action + '">🗑️</button>' +
+            '</div>' +
+          '</div>';
+        }
+
+        function renderMediaSection(container, items, options) {
+          if (!items.length) {
+            setSectionState(container, 'empty', options.emptyState);
+            return;
+          }
+          container.innerHTML = items.map(renderMediaCard).join('');
+        }
+
+        function toggleButtonLoading(btnElement, isLoading) {
+          if (!btnElement) return;
+          if (isLoading) {
+            btnElement.dataset.originalText = btnElement.innerText;
+            btnElement.innerText = '...';
+            btnElement.disabled = true;
+            return;
+          }
+          btnElement.innerText = btnElement.dataset.originalText || '🗑️';
+          btnElement.disabled = false;
+        }
+
+        function animateRemoveCard(cardId) {
+          const card = document.getElementById(cardId);
+          if (!card) return;
+          card.classList.add('is-removing');
+          setTimeout(function() { card.remove(); }, 180);
+        }
+
+        function refreshEmptyState(kind) {
+          if (kind === 'favorite' && !viewState.favorites.length) {
+            setSectionState(els.galleryContainer, 'empty', { icon: '📭', title: '收藏夹空空如也喵~', desc: '等主人收藏一些喜欢的媒体后，这里就会热闹起来啦' });
+          }
+          if (kind === 'history' && !viewState.history.length) {
+            setSectionState(els.historyContainer, 'empty', { icon: '🐾', title: '这里干干净净的', desc: '还没有留下任何浏览足迹喵~' });
+          }
+        }
+
+        async function submitRemoval(config) {
+          const btnElement = config.btnElement;
+          toggleButtonLoading(btnElement, true);
+          setImpact('medium');
+          try {
+            const res = await fetch(config.endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(config.payload)
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || '未知错误');
+            animateRemoveCard(config.cardId);
+            if (config.kind === 'favorite') {
+              viewState.favorites = viewState.favorites.filter(function(item) { return item.recordId !== config.recordId; });
+              updateSectionMeta('gallery', viewState.favorites.length);
+            } else {
+              viewState.history = viewState.history.filter(function(item) { return item.recordId !== config.recordId; });
+              updateSectionMeta('history', viewState.history.length);
+            }
+            setTimeout(function() { refreshEmptyState(config.kind); }, 200);
+            setImpact('success');
+          } catch (e) {
+            toggleButtonLoading(btnElement, false);
+            setImpact('error');
+            showAlert((config.failPrefix || '操作失败：') + e.message);
+          }
+        }
+
+        function openMediaLink(url) {
+          if (!url) {
+            showAlert('当前记录缺少跳转链接喵');
+            return;
+          }
+          if (capabilities.canOpenLink) {
+            tg.openTelegramLink(url);
+            return;
+          }
+          window.open(url, '_blank', 'noopener,noreferrer');
         }
 
         function switchTab(tabId, el) {
-          document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-          document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(function(tab) { tab.classList.remove('active'); });
+          document.querySelectorAll('.nav-item').forEach(function(nav) { nav.classList.remove('active'); });
           document.getElementById('tab-' + tabId).classList.add('active');
           el.classList.add('active');
-          tg.HapticFeedback.impactOccurred('light');
+          setImpact('selection');
         }
-        
-        // 核心：请求后端数据并动态渲染
+
+        function renderInitialStates() {
+          setSectionState(els.galleryContainer, 'loading', { kind: 'gallery' });
+          setSectionState(els.historyContainer, 'loading', { kind: 'history' });
+        }
+
         async function fetchAppData(userId) {
           try {
             const response = await fetch('/api/webapp/data', {
@@ -1967,147 +2356,96 @@ function getWebAppHTML() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ user_id: userId })
             });
-            
             if (!response.ok) throw new Error('网络响应异常');
-            const data = await response.json();
+            const raw = await response.json();
+            const data = normalizeWebAppData(raw);
 
-            // 1. 渲染数据看板
-            if (data.dashboard) {
-              document.getElementById('stat-media').innerText = data.dashboard.total_media;
-              document.getElementById('stat-views').innerText = data.dashboard.total_views;
-              document.getElementById('stat-groups').innerText = data.dashboard.total_groups;
-              document.getElementById('stat-anti').innerText = data.dashboard.total_anti;
-            }
+            viewState.favorites = data.favorites;
+            viewState.history = data.history;
 
-            // 渲染活跃榜
-            if (data.top_users && data.top_users.length > 0) {
-              document.getElementById('top-users-list').innerHTML = data.top_users.map((u, i) => 
-                '<li class="top-user-li"><span>' + (i===0?'🥇':(i===1?'🥈':'🥉')) + ' ' + (u.first_name || '神秘人') + '</span><b>' + u.c + ' 次</b></li>'
-              ).join('');
-            } else {
-              document.getElementById('top-users-list').innerHTML = '<li>暂无数据喵</li>';
-            }
-
-            // 2. 渲染画廊瀑布流 (收藏夹)
-            const gallery = document.getElementById('gallery-container');
-            if (data.favorites && data.favorites.length > 0) {
-              gallery.innerHTML = data.favorites.map(item => {
-                // 🌟 恢复：完全解析视频、图片、文件的图标
-                const icon = item.media_type === 'video' ? '🎬' : (item.media_type === 'photo' ? '🖼️' : '📁');
-                const caption = item.caption ? item.caption.substring(0, 10) + '...' : '已收藏记录';
-                const chatIdStr = String(item.chat_id).replace('-100', '');
-                const deepLink = 'https://t.me/c/' + chatIdStr + '/' + item.message_id;
-                
-                return '<div class="gallery-item" id="fav-item-' + item.media_id + '">' +
-                         '<div class="gallery-icon">' + icon + '</div>' +
-                         '<div class="gallery-title">' + caption + '</div>' +
-                         '<div style="display: flex; gap: 6px;">' +
-                           '<button class="gallery-btn" style="flex: 1;" onclick="tg.openTelegramLink(\\'' + deepLink + '\\')">👀 围观</button>' +
-                           '<button class="gallery-btn" style="background-color: #ff4d4f; width: 36px; padding: 0;" onclick="removeFav(' + item.media_id + ', this)">🗑️</button>' +
-                         '</div>' +
-                       '</div>';
-              }).join('');
-            } else {
-              gallery.innerHTML = '<p style="grid-column: span 2; text-align: center; font-size: 13px; opacity: 0.6;">收藏夹空空如也喵~</p>';
-            }
-
-            // 3. 渲染历史足迹瀑布流 (历史记录)
-            const historyContainer = document.getElementById('history-container');
-            if (data.history && data.history.length > 0) {
-              historyContainer.innerHTML = data.history.map(item => {
-                const icon = item.media_type === 'video' ? '🎬' : (item.media_type === 'photo' ? '🖼️' : '📁');
-                const caption = item.caption ? item.caption.substring(0, 10) + '...' : '已看记录';
-                const chatIdStr = String(item.chat_id).replace('-100', '');
-                const deepLink = 'https://t.me/c/' + chatIdStr + '/' + item.message_id;
-                
-                return '<div class="gallery-item" id="hist-item-' + item.hist_id + '">' +
-                         '<div class="gallery-icon">' + icon + '</div>' +
-                         '<div class="gallery-title">' + caption + '</div>' +
-                         '<div style="display: flex; gap: 6px;">' +
-                           '<button class="gallery-btn" style="flex: 1;" onclick="tg.openTelegramLink(\\'' + deepLink + '\\')">👀 围观</button>' +
-                           '<button class="gallery-btn" style="background-color: #ff4d4f; width: 36px; padding: 0;" onclick="removeHist(' + item.hist_id + ', this)">🗑️</button>' +
-                         '</div>' +
-                       '</div>';
-              }).join('');
-            } else {
-              historyContainer.innerHTML = '<p style="grid-column: span 2; text-align: center; font-size: 13px; opacity: 0.6;">这里干干净净的，没有留下足迹喵~</p>';
-            }
-
+            renderDashboard(data.dashboard);
+            renderTopUsers(data.topUsers);
+            updateSectionMeta('gallery', data.favorites.length);
+            updateSectionMeta('history', data.history.length);
+            renderMediaSection(els.galleryContainer, data.favorites, {
+              emptyState: { icon: '📭', title: '收藏夹空空如也喵~', desc: '等主人收藏一些喜欢的媒体后，这里就会热闹起来啦' }
+            });
+            renderMediaSection(els.historyContainer, data.history, {
+              emptyState: { icon: '🐾', title: '这里干干净净的', desc: '还没有留下任何浏览足迹喵~' }
+            });
+            renderSettingsView({
+              userName: user && user.first_name,
+              userId: user && user.id,
+              source: user ? 'Telegram' : '受限模式',
+              themeLabel: tg && tg.colorScheme ? (tg.colorScheme === 'dark' ? '深色主题' : '浅色主题') : '跟随系统',
+              favoriteCount: data.favorites.length,
+              historyCount: data.history.length,
+              refreshedAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+              envLabel: capabilities.hasTg ? '客户端已连接' : '浏览器访问'
+            });
           } catch (err) {
             console.error('获取数据失败:', err);
-            // 发生错误时，同时更新两个容器的提示信息
-            document.getElementById('gallery-container').innerHTML = '<p style="grid-column: span 2; text-align: center; color: #ff758c; font-size: 13px;">呜呜，连接数据库失败了喵...</p>';
-            document.getElementById('history-container').innerHTML = '<p style="grid-column: span 2; text-align: center; color: #ff758c; font-size: 13px;">呜呜，连接数据库失败了喵...</p>';
+            setSectionState(els.galleryContainer, 'error', { title: '收藏拉取失败', desc: '呜呜，连接数据库失败了喵...' });
+            setSectionState(els.historyContainer, 'error', { title: '足迹拉取失败', desc: '呜呜，连接数据库失败了喵...' });
           }
         }
 
-        // 记得在 script 里补上这个无刷新抹除的函数哦：
         async function removeHist(histId, btnElement) {
-          if (!user) return;
-          tg.HapticFeedback.impactOccurred('medium');
-          const originalText = btnElement.innerText;
-          btnElement.innerText = '...';
-          btnElement.disabled = true;
-
-          try {
-            const res = await fetch('/api/webapp/remove_hist', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: user.id, hist_id: histId })
-            });
-            const data = await res.json();
-            if (data.success) {
-               const itemCard = document.getElementById('hist-item-' + histId);
-               itemCard.style.opacity = '0';
-               itemCard.style.transform = 'scale(0.9)';
-               setTimeout(() => itemCard.remove(), 200);
-            } else {
-               btnElement.innerText = originalText;
-               btnElement.disabled = false;
-               tg.showAlert('抹除失败：' + (data.error || '未知错误'));
-            }
-          } catch(e) {
-            btnElement.innerText = originalText;
-            btnElement.disabled = false;
-            tg.showAlert('网络错误喵！');
+          if (!user) {
+            showAlert('请在 Telegram 客户端内打开后再操作喵！');
+            return;
           }
+          await submitRemoval({
+            endpoint: '/api/webapp/remove_hist',
+            payload: { user_id: user.id, hist_id: histId },
+            cardId: 'hist-item-' + histId,
+            recordId: histId,
+            btnElement,
+            kind: 'history',
+            failPrefix: '抹除失败：'
+          });
         }
-        
-        // 新增：处理取消收藏逻辑
-        async function removeFav(mediaId, btnElement) {
-          if (!user) return;
-          
-          // 给用户一点点击反馈
-          tg.HapticFeedback.impactOccurred('medium');
-          const originalText = btnElement.innerText;
-          btnElement.innerText = '...';
-          btnElement.disabled = true;
 
-          try {
-            const res = await fetch('/api/webapp/remove_fav', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: user.id, media_id: mediaId })
-            });
-            const data = await res.json();
-            
-            if (data.success) {
-               // 成功后，丝滑地从页面上移除该卡片
-               const itemCard = document.getElementById('fav-item-' + mediaId);
-               itemCard.style.opacity = '0';
-               itemCard.style.transform = 'scale(0.9)';
-               setTimeout(() => itemCard.remove(), 200); // 等待 CSS 动画结束
-               tg.HapticFeedback.notificationOccurred('success');
-            } else {
-               btnElement.innerText = originalText;
-               btnElement.disabled = false;
-               tg.showAlert('移除失败：' + (data.error || '未知错误'));
-            }
-          } catch(e) {
-            btnElement.innerText = originalText;
-            btnElement.disabled = false;
-            tg.showAlert('网络错误，请稍后再试喵！');
+        async function removeFav(mediaId, btnElement) {
+          if (!user) {
+            showAlert('请在 Telegram 客户端内打开后再操作喵！');
+            return;
           }
+          await submitRemoval({
+            endpoint: '/api/webapp/remove_fav',
+            payload: { user_id: user.id, media_id: mediaId },
+            cardId: 'fav-item-' + mediaId,
+            recordId: mediaId,
+            btnElement,
+            kind: 'favorite',
+            failPrefix: '移除失败：'
+          });
+        }
+
+        const user = tg && tg.initDataUnsafe ? tg.initDataUnsafe.user : null;
+        els.heroThemeChip.innerText = tg && tg.colorScheme ? ('主题：' + (tg.colorScheme === 'dark' ? '深色' : '浅色')) : '主题：默认';
+        els.heroEnvChip.innerText = capabilities.hasTg ? '环境：Telegram' : '环境：浏览器';
+        renderInitialStates();
+
+        if (user) {
+          els.welcomeText.innerText = '欢迎回来, ' + (user.first_name || '主人') + ' 喵！';
+          fetchAppData(user.id);
+        } else {
+          els.welcomeText.innerText = '请在 Telegram 客户端内打开喵！';
+          renderSettingsView({
+            userName: '未识别用户',
+            userId: '--',
+            source: '受限模式',
+            themeLabel: '默认主题',
+            favoriteCount: 0,
+            historyCount: 0,
+            refreshedAt: '--:--',
+            envLabel: '浏览器访问'
+          });
+          setSectionState(els.galleryContainer, 'empty', { icon: '🔒', title: '环境异常，无法获取身份信息', desc: '请从 Telegram 客户端中打开 WebApp 喵～' });
+          setSectionState(els.historyContainer, 'empty', { icon: '🔒', title: '环境异常，无法获取身份信息', desc: '请从 Telegram 客户端中打开 WebApp 喵～' });
+          updateSectionMeta('gallery', 0);
+          updateSectionMeta('history', 0);
         }
       </script>
     </body>
