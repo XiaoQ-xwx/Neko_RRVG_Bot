@@ -9,18 +9,21 @@
  * ========================================================================= */
 
 // 🌟 V5.9: 随机抽取过滤器默认值
+// 🌟 V5.10: 新增 sender_user_id 维度
 const FILTER_DEFAULTS = Object.freeze({
   media_type:    'all',   // all | photo | video | animation
-  date_mode:     'all',   // all | today | d7 | d30 | year | custom
-  date_from:     '',      // YYYY-MM-DD（仅 date_mode=custom 有效）
-  date_to:       '',      // YYYY-MM-DD（仅 date_mode=custom 有效）
-  duration_mode: 'all',   // all | s30 | s60 | s120 | s300 | custom
-  duration_max:  ''       // 整数秒字符串（仅 duration_mode=custom 有效）
+  date_mode:     'all',   // all | today | d7 | d30 | year | after | before | custom
+  date_from:     '',      // YYYY-MM-DD（date_mode=custom/after 有效）
+  date_to:       '',      // YYYY-MM-DD（date_mode=custom/before 有效）
+  duration_mode: 'all',   // all | s30 | s60 | s120 | s300 | gt | lt | range | custom
+  duration_min:  '',      // 整数秒字符串（duration_mode=gt/range 有效）
+  duration_max:  '',      // 整数秒字符串（duration_mode=lt/range/custom 有效）
+  sender_user_id: ''      // '' (不限) | 正整数 (限定发送者) | 'null' (默认资源/历史数据)
 });
 const FILTER_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const FILTER_MEDIA_TYPES     = new Set(['all', 'photo', 'video', 'animation']);
-const FILTER_DATE_MODES      = new Set(['all', 'today', 'd7', 'd30', 'year', 'custom']);
-const FILTER_DURATION_MODES  = new Set(['all', 's30', 's60', 's120', 's300', 'custom']);
+const FILTER_DATE_MODES      = new Set(['all', 'today', 'd7', 'd30', 'year', 'after', 'before', 'custom']);
+const FILTER_DURATION_MODES  = new Set(['all', 's30', 's60', 's120', 's300', 'gt', 'lt', 'range', 'custom']);
 const FILTER_DURATION_PRESET_MAP = Object.freeze({ s30: 30, s60: 60, s120: 120, s300: 300 });
 
 const SETTING_DEFAULTS = Object.freeze({
@@ -37,6 +40,100 @@ const SETTING_DEFAULTS = Object.freeze({
 const GROUP_MEMBER_CACHE_TTL_MS = 60_000;
 const GROUP_MEMBER_CACHE_MAX = 4096;
 const groupMembershipCache = new Map();
+
+function isCancelInput(input, botUsername) {
+  if (!input) return false;
+  const trimmed = input.trim();
+  if (trimmed === '取消') return true;
+
+  const match = trimmed.match(/^\/cancel(?:@([A-Za-z0-9_]+))?$/i);
+  if (!match) return false;
+
+  const mentionedBot = match[1];
+  if (!mentionedBot) return true;
+  if (!botUsername) return true;
+  return mentionedBot.toLowerCase() === botUsername.toLowerCase();
+}
+
+function isAddressedBotCommand(text, commandName, botUsername) {
+  if (!text || !commandName) return false;
+
+  const match = text.match(/^\/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?=\s|$)/);
+  if (!match) return false;
+
+  const command = match[1];
+  if (command.toLowerCase() !== commandName.toLowerCase()) return false;
+
+  const mentionedBot = match[2];
+  if (!mentionedBot) return true;
+  // 无法确认 @目标是否为自己时保守忽略，避免抢答其他机器人的指令。
+  if (!botUsername) return false;
+  return mentionedBot.toLowerCase() === botUsername.toLowerCase();
+}
+
+function safeJSONStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (err) {
+    console.warn('JSON 序列化失败:', err?.message);
+    return null;
+  }
+}
+
+function safeJSONParse(text) {
+  if (!text || typeof text !== 'string') return null;
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    console.warn('JSON 解析失败:', err?.message);
+    return null;
+  }
+}
+
+function deepMergeJSONValue(currentValue, nextValue) {
+  if (nextValue == null) return currentValue ?? null;
+  if (currentValue == null) return nextValue;
+
+  if (Array.isArray(nextValue)) {
+    return nextValue.length > 0 ? nextValue : (Array.isArray(currentValue) ? currentValue : nextValue);
+  }
+  if (Array.isArray(currentValue)) return currentValue.length > 0 ? currentValue : nextValue;
+
+  if (typeof currentValue !== 'object' || typeof nextValue !== 'object') {
+    if (typeof nextValue === 'string' && nextValue === '' && typeof currentValue === 'string' && currentValue !== '') {
+      return currentValue;
+    }
+    return nextValue;
+  }
+
+  const merged = { ...currentValue };
+  for (const [key, value] of Object.entries(nextValue)) {
+    merged[key] = key in merged ? deepMergeJSONValue(merged[key], value) : value;
+  }
+  return merged;
+}
+
+function serializeStoredMediaPayload(source, messageLike) {
+  if (!messageLike || typeof messageLike !== 'object') return null;
+  return safeJSONStringify({ source, message: messageLike });
+}
+
+function normalizeStoredMediaPayload(rawPayload, fallbackSource = 'external_import') {
+  if (rawPayload == null) return null;
+  if (typeof rawPayload === 'string') {
+    const parsed = safeJSONParse(rawPayload);
+    return parsed ? safeJSONStringify(parsed) : safeJSONStringify({ source: fallbackSource, message: rawPayload });
+  }
+  return safeJSONStringify(rawPayload);
+}
+
+function mergeStoredMediaPayload(currentPayload, nextPayload) {
+  const currentParsed = safeJSONParse(currentPayload);
+  const nextParsed = safeJSONParse(nextPayload);
+  if (!currentParsed) return nextPayload || currentPayload || null;
+  if (!nextParsed) return currentPayload || nextPayload || null;
+  return safeJSONStringify(deepMergeJSONValue(currentParsed, nextParsed)) || nextPayload || currentPayload || null;
+}
 
 let isInstanceAwake = false;
 
@@ -113,7 +210,7 @@ export default {
         return new Response(JSON.stringify({ status: 'success', count: payload.data.length }), { status: 200 });
       }
 
-      // 🌟 V5.9: 批量更新视频时长 API
+      // 🌟 V5.9+: 批量回填历史媒体元数据（duration / raw_message_json）
       if (request.method === 'POST' && url.pathname === '/api/update_duration') {
         const secret = request.headers.get('Authorization');
         if (env.ADMIN_SECRET && secret !== env.ADMIN_SECRET) return new Response('Unauthorized', { status: 401 });
@@ -123,14 +220,26 @@ export default {
           return new Response(JSON.stringify({ status: 'error', message: 'No updates provided' }), { status: 400 });
         }
         let updatedCount = 0;
-        // 每批 50 条
         for (let i = 0; i < updates.length; i += 50) {
           const batch = updates.slice(i, i + 50);
           const stmts = batch.map(item => {
+            const messageId = Number(item.message_id);
+            const chatId = Number(item.chat_id);
+            const duration = Number.isInteger(item.duration) ? item.duration : null;
+            const normalizedRawMessageJson = normalizeStoredMediaPayload(
+              item.raw_message_json ?? item.raw_message ?? item.raw_message_data ?? item.telegram_message,
+              'telegram_desktop_export'
+            );
+            if (!Number.isInteger(messageId) || !Number.isInteger(chatId)) return null;
+            if (duration === null && normalizedRawMessageJson === null) return null;
             return env.D1.prepare(
-              `UPDATE media_library SET duration = ? WHERE message_id = ? AND chat_id = ? AND duration IS NULL`
-            ).bind(item.duration, item.message_id, item.chat_id);
-          });
+              `UPDATE media_library
+               SET duration = COALESCE(duration, ?),
+                   raw_message_json = COALESCE(raw_message_json, ?)
+               WHERE message_id = ? AND chat_id = ?`
+            ).bind(duration, normalizedRawMessageJson, messageId, chatId);
+          }).filter(Boolean);
+          if (stmts.length === 0) continue;
           const results = await env.D1.batch(stmts);
           updatedCount += results.filter(r => r.meta?.changes > 0).length;
         }
@@ -152,7 +261,7 @@ async function handleSetup(origin, env) {
   try {
     const initSQL = [
       `CREATE TABLE IF NOT EXISTS config_topics (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, chat_title TEXT, topic_id INTEGER, category_name TEXT, bound_by INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
-      `CREATE TABLE IF NOT EXISTS media_library (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER, chat_id INTEGER, topic_id INTEGER, category_name TEXT, view_count INTEGER DEFAULT 0, file_unique_id TEXT, file_id TEXT, media_type TEXT, caption TEXT, duration INTEGER DEFAULT NULL, added_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
+      `CREATE TABLE IF NOT EXISTS media_library (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER, chat_id INTEGER, topic_id INTEGER, category_name TEXT, view_count INTEGER DEFAULT 0, file_unique_id TEXT, file_id TEXT, media_type TEXT, caption TEXT, duration INTEGER DEFAULT NULL, raw_message_json TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP);`,
       `CREATE TABLE IF NOT EXISTS user_favorites (user_id INTEGER, media_id INTEGER, saved_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id, media_id));`,
       `CREATE TABLE IF NOT EXISTS last_served (user_id INTEGER PRIMARY KEY, last_media_id INTEGER, served_at INTEGER);`,
       `CREATE TABLE IF NOT EXISTS served_history (media_id INTEGER PRIMARY KEY);`,
@@ -197,7 +306,9 @@ async function handleSetup(origin, env) {
       { name: 'file_id',        type: 'TEXT' },
       { name: 'media_type',     type: 'TEXT' },
       { name: 'caption',        type: 'TEXT' },
-      { name: 'duration',       type: 'INTEGER DEFAULT NULL' }
+      { name: 'duration',       type: 'INTEGER DEFAULT NULL' },
+      { name: 'raw_message_json', type: 'TEXT' },
+      { name: 'sender_user_id',   type: 'INTEGER DEFAULT NULL' }
     ];
     let existingCols = new Set();
     try {
@@ -222,6 +333,13 @@ async function handleSetup(origin, env) {
     } catch (e) {
       // 索引已存在或其他非致命错误，静默忽略
       console.warn('duration 索引创建跳过:', e?.message);
+    }
+
+    // 🌟 V5.10: sender_user_id 列相关索引（必须在列迁移之后创建）
+    try {
+      await env.D1.prepare(`CREATE INDEX IF NOT EXISTS idx_media_chat_sender ON media_library (chat_id, sender_user_id);`).run();
+    } catch (e) {
+      console.warn('sender_user_id 索引创建跳过:', e?.message);
     }
 
     const webhookUrl = `${origin}/webhook`;
@@ -345,10 +463,10 @@ async function handleMessage(message, env, ctx) {
   const topicId = message.message_thread_id || null;
   const userId = message.from.id;
 
-  if (text.startsWith('/start')) return sendMainMenu(chatId, topicId, env, userId);
+  if (isAddressedBotCommand(text, 'start', env.BOT_USERNAME)) return sendMainMenu(chatId, topicId, env, userId);
 
   if (text.startsWith('/help')) {
-    const helpText = `📖 **籽青的说明书喵~ (≧∇≦)**\n/start - 唤出籽青的主菜单\n\n**【管理员专属指令喵】**\n/bind <分类名> - 将当前话题绑定为采集库\n/bind_output - 将当前话题设为专属推送展示窗口\n/import_json - 获取关于导入历史消息的说明\n\n**【快捷管理魔法】**\n直接回复某张图片/视频：\n发送 \`/d\` - 彻底抹除它\n发送 \`/mv\` - 将它转移到其他分类\n发送 \`/list\` - 查看它的收录信息\n\n**【批量操作】**\n\`/d <数量|all>\` - 批量删除当前分类最近N条\n\`/mv <数量|all> <分类名>\` - 批量转移\n\`/bd\` - 进入精确批量删除模式（转发选择）\n\`/bmv\` - 进入精确批量转移模式（转发选择）`;
+    const helpText = `📖 **籽青的说明书喵~ (≧∇≦)**\n/start - 唤出籽青的主菜单\n\n**【管理员专属指令喵】**\n/bind <分类名> - 将当前话题绑定为采集库\n/bind_output - 将当前话题设为专属推送展示窗口\n/import_json - 获取关于导入历史消息的说明\n\n**【快捷管理魔法】**\n直接回复某张图片/视频：\n发送 \`/d\` - 彻底抹除它\n发送 \`/mv\` - 将它转移到其他分类\n发送 \`/list\` - 查看它的收录信息\n发送 \`/list debug\` - 查看它的回填与原始元数据状态\n\n**【批量操作】**\n\`/d <数量|all>\` - 批量删除当前分类最近N条\n\`/mv <数量|all> <分类名>\` - 批量转移\n\`/bd\` - 进入精确批量删除模式（转发选择）\n\`/bmv\` - 进入精确批量转移模式（转发选择）`;
     await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: helpText, parse_mode: 'Markdown' }, env);
     return;
   }
@@ -429,25 +547,41 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "已退出批量转移模式喵～" }, env);
   }
 
-  // 🌟 V5.8: /list — 查询回复媒体的收录记录（所有成员可用）
+  // 🌟 V5.8+: /list — 查询回复媒体的收录记录（支持 /list debug）
   if (message.reply_to_message && text.startsWith('/list')) {
-    const info = extractMediaInfo(message.reply_to_message);
-    if (!info.fileUniqueId) {
+    const isListDebug = /^\/list(?:@[^\s]+)?\s+debug$/i.test(text.trim());
+    const replyMsg = message.reply_to_message;
+    const info = extractMediaInfo(replyMsg);
+    const mediaSelectSQL = `SELECT id, message_id, topic_id, category_name, media_type, duration, view_count, added_at, raw_message_json, file_unique_id FROM media_library`;
+    let mediaRecords = [];
+    let lookupMode = 'file_unique_id';
+
+    if (info.fileUniqueId) {
+      const lookupByFile = await env.D1.prepare(
+        `${mediaSelectSQL} WHERE file_unique_id = ? AND chat_id = ? ORDER BY added_at ASC`
+      ).bind(info.fileUniqueId, chatId).all();
+      mediaRecords = lookupByFile.results || [];
+    }
+
+    if (mediaRecords.length === 0 && Number.isInteger(replyMsg.message_id)) {
+      const lookupByMessage = await env.D1.prepare(
+        `${mediaSelectSQL} WHERE message_id = ? AND chat_id = ? ORDER BY added_at ASC`
+      ).bind(replyMsg.message_id, chatId).all();
+      mediaRecords = lookupByMessage.results || [];
+      if (mediaRecords.length > 0) lookupMode = 'message_id';
+    }
+
+    if (!info.fileUniqueId && mediaRecords.length === 0) {
       return tgAPI('sendMessage', {
         chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id,
         text: "喵？这不是一条媒体消息哦，请回复一张图片或视频再试试！"
       }, env);
     }
 
-    // 🌟 V5.9: 增强查询，加入 duration 和 view_count
-    const { results: mediaRecords } = await env.D1.prepare(
-      `SELECT id, message_id, topic_id, category_name, media_type, duration, view_count, added_at FROM media_library WHERE file_unique_id = ? AND chat_id = ? ORDER BY added_at ASC`
-    ).bind(info.fileUniqueId, chatId).all();
-
-    if (!mediaRecords || mediaRecords.length === 0) {
+    if (mediaRecords.length === 0) {
       return tgAPI('sendMessage', {
         chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id,
-        text: "呜呜，籽青在库里找不到这个媒体的收录记录喵，可能从未被收录过哦～"
+        text: "呜呜，籽青在库里找不到这个媒体的收录记录喵，可能从未被收录过，或历史导入记录还没对上当前消息 ID 哦～"
       }, env);
     }
 
@@ -461,15 +595,12 @@ async function handleMessage(message, env, ctx) {
       for (const row of (topicRows || [])) topicNameMap[row.topic_id] = row.category_name;
     }
 
-    // 🌟 V5.9: 从原消息提取文件大小
-    const replyMsg = message.reply_to_message;
     let fileSize = null;
     if (replyMsg.video?.file_size) fileSize = replyMsg.video.file_size;
     else if (replyMsg.animation?.file_size) fileSize = replyMsg.animation.file_size;
     else if (replyMsg.document?.file_size) fileSize = replyMsg.document.file_size;
     else if (replyMsg.photo?.length > 0) fileSize = replyMsg.photo[replyMsg.photo.length - 1].file_size;
 
-    // 格式化文件大小
     const formatSize = (bytes) => {
       if (!bytes) return null;
       if (bytes < 1024) return `${bytes} B`;
@@ -478,7 +609,6 @@ async function handleMessage(message, env, ctx) {
       return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
     };
 
-    // 格式化时长
     const formatDuration = (sec) => {
       if (sec == null) return null;
       const m = Math.floor(sec / 60);
@@ -488,8 +618,6 @@ async function handleMessage(message, env, ctx) {
 
     const chatIdNum = String(chatId).replace(/^-100/, '');
     const typeLabel = { photo: '🖼️ 图片', video: '🎬 视频', animation: '🎠 GIF', document: '📄 文件' };
-
-    // 🌟 V5.9: 构建媒体概要信息（从第一条记录和原消息获取）
     const firstRec = mediaRecords[0];
     const mediaType = typeLabel[firstRec.media_type] || firstRec.media_type || '未知';
     const sizePart = fileSize ? `📦 大小：${formatSize(fileSize)}` : '';
@@ -500,6 +628,37 @@ async function handleMessage(message, env, ctx) {
     if (sizePart) summaryLine += ` | ${sizePart}`;
     if (durationPart) summaryLine += ` | ${durationPart}`;
     summaryLine += `\n👁 总浏览：${totalViews} 次`;
+
+    if (isListDebug) {
+      const rawPayload = safeJSONParse(firstRec.raw_message_json);
+      const rawMessage = rawPayload && typeof rawPayload === 'object' ? rawPayload.message : null;
+      const rawSource = rawPayload && typeof rawPayload === 'object' ? rawPayload.source : null;
+      const debugLines = [
+        '🔍 籽青 Debug 已展开喵～',
+        '',
+        `媒体概要: ${mediaType}${sizePart ? ` | ${sizePart}` : ''}${durationPart ? ` | ${durationPart}` : ''}`,
+        `总浏览: ${totalViews} 次`,
+        '',
+        '🧪 回填调试',
+        `- 查找方式: ${lookupMode}`,
+        `- DB记录ID: ${firstRec.id}`,
+        `- message_id: ${firstRec.message_id}`,
+        `- 当前回复消息ID: ${replyMsg.message_id}`,
+        `- file_unique_id: ${firstRec.file_unique_id || info.fileUniqueId || 'unknown'}`,
+        `- duration列: ${firstRec.duration != null ? `${firstRec.duration} 秒` : 'NULL'}`,
+        `- raw_message_json: ${firstRec.raw_message_json ? '已存在' : '缺失'}`,
+        `- 原始来源: ${rawSource || 'unknown'}`,
+        `- 原始消息类型: ${rawMessage?.media_type || (rawMessage?.photo ? 'photo' : 'unknown')}`,
+        `- 原始时长: ${rawMessage?.duration_seconds != null ? `${rawMessage.duration_seconds} 秒` : (rawMessage?.duration != null ? `${rawMessage.duration} 秒` : 'NULL')}`,
+        `- 原始文件大小: ${rawMessage?.file_size != null ? rawMessage.file_size : 'NULL'}`,
+        `- 原始分辨率: ${rawMessage?.width && rawMessage?.height ? `${rawMessage.width}x${rawMessage.height}` : 'NULL'}`
+      ];
+      return tgAPI('sendMessage', {
+        chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id,
+        text: debugLines.join('\n'),
+        disable_web_page_preview: true
+      }, env);
+    }
 
     const lines = mediaRecords.map((rec, idx) => {
       const topicBound = rec.topic_id ? (topicNameMap[rec.topic_id] || '未知话题') : '无话题';
@@ -515,7 +674,7 @@ async function handleMessage(message, env, ctx) {
     });
 
     return tgAPI('sendMessage', {
-      chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.reply_to_message.message_id,
+      chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id,
       text: `🔍 *籽青找到了 ${mediaRecords.length} 条收录记录喵～*\n\n${summaryLine}\n\n━━━━━━━━━━━━━━━━\n📋 *收录详情*\n${lines.join('\n')}`,
       parse_mode: 'Markdown', disable_web_page_preview: true
     }, env);
@@ -674,7 +833,8 @@ async function handleMessage(message, env, ctx) {
           file_id: '',
           media_type: mediaType,
           caption: caption.substring(0, 100),
-          duration: Number.isInteger(msg.duration_seconds) ? msg.duration_seconds : (Number.isInteger(msg.duration) ? msg.duration : null)
+          duration: Number.isInteger(msg.duration_seconds) ? msg.duration_seconds : (Number.isInteger(msg.duration) ? msg.duration : null),
+          raw_message_json: serializeStoredMediaPayload('telegram_desktop_export', msg)
         });
       }
 
@@ -686,8 +846,8 @@ async function handleMessage(message, env, ctx) {
       for (let i = 0; i < validMedia.length; i += 50) {
         const batch = validMedia.slice(i, i + 50);
         const stmts = batch.map(item => {
-          return env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(item.message_id, item.chat_id, item.topic_id, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption, item.duration ?? null);
+          return env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration, raw_message_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(item.message_id, item.chat_id, item.topic_id, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption, item.duration ?? null, item.raw_message_json ?? null);
         });
         await env.D1.batch(stmts);
         successCount += batch.length;
@@ -703,7 +863,7 @@ async function handleMessage(message, env, ctx) {
   // 🌟 V5.9: 过滤器文本输入会话捕获（在批量收录拦截器之前）
   if (message.text && typeof message.text === 'string' && message.text.trim()) {
     const filterSession = await env.D1.prepare(
-      `SELECT * FROM batch_sessions WHERE chat_id = ? AND user_id = ? AND mode IN ('filter_date_custom', 'filter_dur_input') LIMIT 1`
+      `SELECT * FROM batch_sessions WHERE chat_id = ? AND user_id = ? AND mode IN ('filter_date_custom', 'filter_date_after', 'filter_date_before', 'filter_dur_input', 'filter_dur_gt', 'filter_dur_lt', 'filter_dur_range', 'filter_dur_custom') LIMIT 1`
     ).bind(chatId, userId).first();
 
     if (filterSession) {
@@ -716,7 +876,7 @@ async function handleMessage(message, env, ctx) {
       }
 
       // 取消操作
-      if (input === '/cancel' || input === '取消') {
+      if (isCancelInput(input, env.BOT_USERNAME)) {
         await env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run();
         return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "✅ 已取消筛选输入喵～" }, env);
       }
@@ -725,7 +885,70 @@ async function handleMessage(message, env, ctx) {
       try { payload = JSON.parse(filterSession.collected_ids || '{}'); } catch (e) { payload = {}; }
       const sourceChatId = typeof payload.sourceChatId === 'number' ? payload.sourceChatId : chatId;
 
-      if (filterSession.mode === 'filter_dur_input') {
+      // —— 时长：大于（gt）——
+      if (filterSession.mode === 'filter_dur_gt') {
+        if (!/^(0|[1-9]\d*)$/.test(input)) {
+          return tgAPI('sendMessage', {
+            chat_id: chatId, message_thread_id: topicId,
+            text: "⚠️ 格式错误！请输入非负整数秒数（如 30、120），或发送 /cancel 取消喵～"
+          }, env);
+        }
+        const minSec = parseInt(input, 10);
+        await Promise.all([
+          upsertUserFilter(userId, sourceChatId, 'duration_mode', 'gt', env),
+          upsertUserFilter(userId, sourceChatId, 'duration_min', String(minSec), env),
+          upsertUserFilter(userId, sourceChatId, 'duration_max', '', env),
+          env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
+        ]);
+        return sendFilterPanelNew(userId, chatId, topicId, sourceChatId, `✅ 时长筛选已设置：>${minSec} 秒的视频喵～`, env);
+      }
+
+      // —— 时长：小于（lt）——
+      else if (filterSession.mode === 'filter_dur_lt') {
+        if (!/^(0|[1-9]\d*)$/.test(input)) {
+          return tgAPI('sendMessage', {
+            chat_id: chatId, message_thread_id: topicId,
+            text: "⚠️ 格式错误！请输入非负整数秒数（如 30、120），或发送 /cancel 取消喵～"
+          }, env);
+        }
+        const maxSec = parseInt(input, 10);
+        await Promise.all([
+          upsertUserFilter(userId, sourceChatId, 'duration_mode', 'lt', env),
+          upsertUserFilter(userId, sourceChatId, 'duration_min', '', env),
+          upsertUserFilter(userId, sourceChatId, 'duration_max', String(maxSec), env),
+          env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
+        ]);
+        return sendFilterPanelNew(userId, chatId, topicId, sourceChatId, `✅ 时长筛选已设置：<${maxSec} 秒的视频喵～`, env);
+      }
+
+      // —— 时长：区间（range）——
+      else if (filterSession.mode === 'filter_dur_range') {
+        const rangeMatch = input.match(/^(\d+)\s*[-~]\s*(\d+)$/);
+        if (!rangeMatch) {
+          return tgAPI('sendMessage', {
+            chat_id: chatId, message_thread_id: topicId,
+            text: "⚠️ 格式错误！请输入区间（如 `30-120` 或 `30~120`），或发送 /cancel 取消喵～"
+          }, env);
+        }
+        const minSec = parseInt(rangeMatch[1], 10);
+        const maxSec = parseInt(rangeMatch[2], 10);
+        if (minSec >= maxSec) {
+          return tgAPI('sendMessage', {
+            chat_id: chatId, message_thread_id: topicId,
+            text: "⚠️ 最小值必须小于最大值喵～ 请重新输入或发送 /cancel 取消"
+          }, env);
+        }
+        await Promise.all([
+          upsertUserFilter(userId, sourceChatId, 'duration_mode', 'range', env),
+          upsertUserFilter(userId, sourceChatId, 'duration_min', String(minSec), env),
+          upsertUserFilter(userId, sourceChatId, 'duration_max', String(maxSec), env),
+          env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
+        ]);
+        return sendFilterPanelNew(userId, chatId, topicId, sourceChatId, `✅ 时长筛选已设置：${minSec}~${maxSec} 秒的视频喵～`, env);
+      }
+
+      // —— 时长：自定义上限（custom，兼容保留）——
+      else if (filterSession.mode === 'filter_dur_input' || filterSession.mode === 'filter_dur_custom') {
         // 时长：仅允许非负整数
         if (!/^(0|[1-9]\d*)$/.test(input)) {
           return tgAPI('sendMessage', {
@@ -736,6 +959,7 @@ async function handleMessage(message, env, ctx) {
         const maxSec = parseInt(input, 10);
         await Promise.all([
           upsertUserFilter(userId, sourceChatId, 'duration_mode', 'custom', env),
+          upsertUserFilter(userId, sourceChatId, 'duration_min', '', env),
           upsertUserFilter(userId, sourceChatId, 'duration_max', String(maxSec), env),
           env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
         ]);
@@ -763,6 +987,44 @@ async function handleMessage(message, env, ctx) {
           env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
         ]);
         return sendFilterPanelNew(userId, chatId, topicId, sourceChatId, `✅ 时间筛选已设置：${fromDate} ~ ${toDate}喵～`, env);
+      }
+
+      if (filterSession.mode === 'filter_date_after') {
+        // 单日期：YYYY-MM-DD（≥ 某日期）
+        const trimmed = input.trim();
+        if (!FILTER_DATE_RE.test(trimmed)) {
+          return tgAPI('sendMessage', {
+            chat_id: chatId, message_thread_id: topicId,
+            text: "⚠️ 格式错误！请按 `YYYY-MM-DD` 格式输入（如 2024-01-01），或发送 /cancel 取消喵～",
+            parse_mode: 'Markdown'
+          }, env);
+        }
+        await Promise.all([
+          upsertUserFilter(userId, sourceChatId, 'date_mode', 'after', env),
+          upsertUserFilter(userId, sourceChatId, 'date_from', trimmed, env),
+          upsertUserFilter(userId, sourceChatId, 'date_to', '', env),
+          env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
+        ]);
+        return sendFilterPanelNew(userId, chatId, topicId, sourceChatId, `✅ 时间筛选已设置：≥ ${trimmed}喵～`, env);
+      }
+
+      if (filterSession.mode === 'filter_date_before') {
+        // 单日期：YYYY-MM-DD（≤ 某日期）
+        const trimmed = input.trim();
+        if (!FILTER_DATE_RE.test(trimmed)) {
+          return tgAPI('sendMessage', {
+            chat_id: chatId, message_thread_id: topicId,
+            text: "⚠️ 格式错误！请按 `YYYY-MM-DD` 格式输入（如 2024-12-31），或发送 /cancel 取消喵～",
+            parse_mode: 'Markdown'
+          }, env);
+        }
+        await Promise.all([
+          upsertUserFilter(userId, sourceChatId, 'date_mode', 'before', env),
+          upsertUserFilter(userId, sourceChatId, 'date_from', '', env),
+          upsertUserFilter(userId, sourceChatId, 'date_to', trimmed, env),
+          env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run()
+        ]);
+        return sendFilterPanelNew(userId, chatId, topicId, sourceChatId, `✅ 时间筛选已设置：≤ ${trimmed}喵～`, env);
       }
     }
   }
@@ -813,12 +1075,17 @@ async function handleMessage(message, env, ctx) {
   if (mediaInfo.fileUniqueId) {
     const query = await env.D1.prepare(`SELECT category_name FROM config_topics WHERE chat_id = ? AND (topic_id = ? OR topic_id IS NULL) AND category_name != 'output' LIMIT 1`).bind(chatId, topicId).first();
     if (query && query.category_name) {
-      const existing = await env.D1.prepare(`SELECT id, duration FROM media_library WHERE file_unique_id = ? AND chat_id = ? LIMIT 1`).bind(mediaInfo.fileUniqueId, chatId).first();
+      const existing = await env.D1.prepare(`SELECT id, duration, raw_message_json, sender_user_id FROM media_library WHERE file_unique_id = ? AND chat_id = ? LIMIT 1`).bind(mediaInfo.fileUniqueId, chatId).first();
       if (existing) {
-        // 🌟 V5.9: 渐进式补全 duration（如果原记录没有，从新消息中获取）
-        if (existing.duration === null && mediaInfo.duration !== null) {
+        // 🌟 V5.10+: 渐进式补全 duration + sender_user_id + 原始媒体元数据
+        const mergedRawMessageJson = mergeStoredMediaPayload(existing.raw_message_json, mediaInfo.rawMessageJson);
+        const shouldUpdateDuration = existing.duration === null && mediaInfo.duration !== null;
+        const shouldUpdateSender = existing.sender_user_id === null && mediaInfo.senderUserId !== null;
+        const shouldUpdateRaw = mergedRawMessageJson !== null && mergedRawMessageJson !== existing.raw_message_json;
+        if (shouldUpdateDuration || shouldUpdateSender || shouldUpdateRaw) {
           ctx.waitUntil(
-            env.D1.prepare(`UPDATE media_library SET duration = ? WHERE id = ?`).bind(mediaInfo.duration, existing.id).run()
+            env.D1.prepare(`UPDATE media_library SET duration = COALESCE(duration, ?), sender_user_id = COALESCE(sender_user_id, ?), raw_message_json = ? WHERE id = ?`)
+              .bind(mediaInfo.duration ?? null, mediaInfo.senderUserId ?? null, shouldUpdateRaw ? mergedRawMessageJson : existing.raw_message_json, existing.id).run()
           );
         }
         const notify = await getSetting(chatId, 'dup_notify', env);
@@ -827,25 +1094,29 @@ async function handleMessage(message, env, ctx) {
         }
         return;
       }
-      await env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(message.message_id, chatId, topicId, query.category_name, mediaInfo.fileUniqueId, mediaInfo.fileId, mediaInfo.type, message.caption || '', mediaInfo.duration ?? null).run();
+      await env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration, raw_message_json, sender_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(message.message_id, chatId, topicId, query.category_name, mediaInfo.fileUniqueId, mediaInfo.fileId, mediaInfo.type, message.caption || '', mediaInfo.duration ?? null, mediaInfo.rawMessageJson, mediaInfo.senderUserId ?? null).run();
     }
   }
 }
 
 function extractMediaInfo(message) {
-  let info = { fileUniqueId: null, fileId: null, type: null, duration: null };
+  const senderUserId = message.from?.id || null;
+  let info = { fileUniqueId: null, fileId: null, type: null, duration: null, rawMessageJson: null, senderUserId: null };
   if (message.photo && message.photo.length > 0) {
     const p = message.photo[message.photo.length - 1];
-    info = { fileUniqueId: p.file_unique_id, fileId: p.file_id, type: 'photo', duration: null };
+    info = { fileUniqueId: p.file_unique_id, fileId: p.file_id, type: 'photo', duration: null, rawMessageJson: serializeStoredMediaPayload('telegram_webhook', message), senderUserId };
   } else if (message.video) {
     info = { fileUniqueId: message.video.file_unique_id, fileId: message.video.file_id, type: 'video',
-             duration: Number.isInteger(message.video.duration) ? message.video.duration : null };
+             duration: Number.isInteger(message.video.duration) ? message.video.duration : null,
+             rawMessageJson: serializeStoredMediaPayload('telegram_webhook', message), senderUserId };
   } else if (message.document) {
-    info = { fileUniqueId: message.document.file_unique_id, fileId: message.document.file_id, type: 'document', duration: null };
+    info = { fileUniqueId: message.document.file_unique_id, fileId: message.document.file_id, type: 'document', duration: null,
+             rawMessageJson: serializeStoredMediaPayload('telegram_webhook', message), senderUserId };
   } else if (message.animation) {
     info = { fileUniqueId: message.animation.file_unique_id, fileId: message.animation.file_id, type: 'animation',
-             duration: Number.isInteger(message.animation.duration) ? message.animation.duration : null };
+             duration: Number.isInteger(message.animation.duration) ? message.animation.duration : null,
+             rawMessageJson: serializeStoredMediaPayload('telegram_webhook', message), senderUserId };
   }
   return info;
 }
@@ -1167,6 +1438,42 @@ async function handleCallback(callback, env, ctx) {
       }, env);
     }
 
+    // —— 自定义时间：≥ 某日期（ForceReply）——
+    else if (action === 'filter_time_after') {
+      const conflictSession = await env.D1.prepare(
+        `SELECT mode FROM batch_sessions WHERE chat_id = ? AND user_id = ? LIMIT 1`
+      ).bind(chatId, userId).first();
+      if (conflictSession && ['bd','bmv','cleanup','bmv_quick'].includes(conflictSession.mode.split(':')[0])) {
+        return tgAPI('sendMessage', { chat_id: chatId, text: "请先结束当前的批量操作会话，再设置筛选器喵～" }, env);
+      }
+      await env.D1.prepare(`DELETE FROM batch_sessions WHERE chat_id = ? AND user_id = ?`).bind(chatId, userId).run();
+      await env.D1.prepare(`INSERT INTO batch_sessions (chat_id, user_id, mode, collected_ids) VALUES (?, ?, 'filter_date_after', ?)`).bind(chatId, userId, JSON.stringify({ sourceChatId: sc })).run();
+      await tgAPI('sendMessage', {
+        chat_id: chatId, message_thread_id: topicId,
+        text: "📅 **设置收录时间：≥ 某日期**\n请回复本条消息输入起始日期喵～\n\n📌 格式：`YYYY-MM-DD`\n💡 示例：`2024-06-01`（表示 2024-06-01 及之后收录的媒体）\n\n发送 /cancel 取消",
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true, selective: true }
+      }, env);
+    }
+
+    // —— 自定义时间：≤ 某日期（ForceReply）——
+    else if (action === 'filter_time_before') {
+      const conflictSession = await env.D1.prepare(
+        `SELECT mode FROM batch_sessions WHERE chat_id = ? AND user_id = ? LIMIT 1`
+      ).bind(chatId, userId).first();
+      if (conflictSession && ['bd','bmv','cleanup','bmv_quick'].includes(conflictSession.mode.split(':')[0])) {
+        return tgAPI('sendMessage', { chat_id: chatId, text: "请先结束当前的批量操作会话，再设置筛选器喵～" }, env);
+      }
+      await env.D1.prepare(`DELETE FROM batch_sessions WHERE chat_id = ? AND user_id = ?`).bind(chatId, userId).run();
+      await env.D1.prepare(`INSERT INTO batch_sessions (chat_id, user_id, mode, collected_ids) VALUES (?, ?, 'filter_date_before', ?)`).bind(chatId, userId, JSON.stringify({ sourceChatId: sc })).run();
+      await tgAPI('sendMessage', {
+        chat_id: chatId, message_thread_id: topicId,
+        text: "📅 **设置收录时间：≤ 某日期**\n请回复本条消息输入截止日期喵～\n\n📌 格式：`YYYY-MM-DD`\n💡 示例：`2024-12-31`（表示 2024-12-31 及之前收录的媒体）\n\n发送 /cancel 取消",
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true, selective: true }
+      }, env);
+    }
+
     // —— 时长子面板 ——
     else if (action === 'filter_dur_panel') {
       await showFilterDurPanel(userId, chatId, msgId, sc, env);
@@ -1177,17 +1484,47 @@ async function handleCallback(callback, env, ctx) {
       const val = action.replace('filter_dur_', '');
       // 防抖：当前已是该值，静默提示
       const fCur = await getUserFiltersBatch(userId, sc, env);
-      if (fCur.duration_mode === val && fCur.duration_max === '') {
+      if (fCur.duration_mode === val && fCur.duration_min === '' && fCur.duration_max === '') {
         return tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "当前已是该选项喵～", show_alert: false }, env);
       }
       await Promise.all([
         upsertUserFilter(userId, sc, 'duration_mode', val, env),
+        upsertUserFilter(userId, sc, 'duration_min',  '', env),
         upsertUserFilter(userId, sc, 'duration_max',  '', env)
       ]);
       await showFilterDurPanel(userId, chatId, msgId, sc, env);
     }
 
-    // —— 自定义时长（ForceReply）——
+    // —— 大于/小于/区间（ForceReply）——
+    else if (['filter_dur_gt', 'filter_dur_lt', 'filter_dur_range'].includes(action)) {
+      const conflictSession = await env.D1.prepare(
+        `SELECT mode FROM batch_sessions WHERE chat_id = ? AND user_id = ? LIMIT 1`
+      ).bind(chatId, userId).first();
+      if (conflictSession && ['bd','bmv','cleanup','bmv_quick'].includes(conflictSession.mode.split(':')[0])) {
+        return tgAPI('sendMessage', { chat_id: chatId, text: "请先结束当前的批量操作会话，再设置筛选器喵～" }, env);
+      }
+      await env.D1.prepare(`DELETE FROM batch_sessions WHERE chat_id = ? AND user_id = ?`).bind(chatId, userId).run();
+      const mode = action.replace('filter_dur_', '');
+      await env.D1.prepare(`INSERT INTO batch_sessions (chat_id, user_id, mode, collected_ids) VALUES (?, ?, ?, ?)`).bind(chatId, userId, `filter_dur_${mode}`, JSON.stringify({ sourceChatId: sc })).run();
+
+      let promptText = '';
+      if (mode === 'gt') {
+        promptText = "⏱ **设置时长下限（大于）**\n请回复本条消息输入最小秒数喵～\n\n📌 示例：`30` 表示仅抽取 >30 秒的视频\n\n发送 /cancel 取消";
+      } else if (mode === 'lt') {
+        promptText = "⏱ **设置时长上限（小于）**\n请回复本条消息输入最大秒数喵～\n\n📌 示例：`120` 表示仅抽取 <120 秒的视频\n\n发送 /cancel 取消";
+      } else if (mode === 'range') {
+        promptText = "⏱ **设置时长区间**\n请回复本条消息输入区间喵～\n\n📌 格式：`最小-最大`（如 `30-120` 表示 30~120 秒）\n\n发送 /cancel 取消";
+      }
+
+      await tgAPI('sendMessage', {
+        chat_id: chatId, message_thread_id: topicId,
+        text: promptText,
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true, selective: true }
+      }, env);
+    }
+
+    // —— 自定义时长（ForceReply，兼容保留）——
     else if (action === 'filter_dur_custom') {
       const conflictSession = await env.D1.prepare(
         `SELECT mode FROM batch_sessions WHERE chat_id = ? AND user_id = ? LIMIT 1`
@@ -1196,13 +1533,42 @@ async function handleCallback(callback, env, ctx) {
         return tgAPI('sendMessage', { chat_id: chatId, text: "请先结束当前的批量操作会话，再设置筛选器喵～" }, env);
       }
       await env.D1.prepare(`DELETE FROM batch_sessions WHERE chat_id = ? AND user_id = ?`).bind(chatId, userId).run();
-      await env.D1.prepare(`INSERT INTO batch_sessions (chat_id, user_id, mode, collected_ids) VALUES (?, ?, 'filter_dur_input', ?)`).bind(chatId, userId, JSON.stringify({ sourceChatId: sc })).run();
+      await env.D1.prepare(`INSERT INTO batch_sessions (chat_id, user_id, mode, collected_ids) VALUES (?, ?, 'filter_dur_custom', ?)`).bind(chatId, userId, JSON.stringify({ sourceChatId: sc })).run();
       await tgAPI('sendMessage', {
         chat_id: chatId, message_thread_id: topicId,
         text: "⏱ **设置自定义视频时长**\n请回复本条消息输入最大秒数喵～\n\n📌 示例：`30` 表示仅抽取 0~30 秒内的视频\n\n发送 /cancel 取消",
         parse_mode: 'Markdown',
         reply_markup: { force_reply: true, selective: true }
       }, env);
+    }
+
+    // 🌟 V5.10: 发送者筛选器回调路由
+    // —— 发送者子面板 ——
+    else if (action === 'filter_sender_panel') {
+      const page = parseInt(data.substring(pipeIdx + 1).split('|')[1]) || 0;
+      await showFilterSenderPanel(userId, chatId, msgId, sc, page, env);
+    }
+
+    // —— 设置指定发送者 ——
+    else if (action === 'filter_sender_set') {
+      const parts = data.substring(pipeIdx + 1).split('|');
+      const senderId = parts[1]; // user_id 在 |sc|userId 格式的第二段
+      if (senderId) {
+        await upsertUserFilter(userId, sc, 'sender_user_id', senderId, env);
+      }
+      await showFilterSenderPanel(userId, chatId, msgId, sc, 0, env);
+    }
+
+    // —— 清除发送者筛选（不限）——
+    else if (action === 'filter_sender_all') {
+      await upsertUserFilter(userId, sc, 'sender_user_id', '', env);
+      await showFilterPanel(userId, chatId, msgId, sc, env);
+    }
+
+    // —— 设置默认资源（NULL 发送者）——
+    else if (action === 'filter_sender_null') {
+      await upsertUserFilter(userId, sc, 'sender_user_id', 'null', env);
+      await showFilterSenderPanel(userId, chatId, msgId, sc, 0, env);
     }
 
     // —— 重置所有过滤器 ——
@@ -1289,16 +1655,37 @@ async function showFilterPanel(userId, chatId, msgId, sourceChatId, env) {
   const f = await getUserFiltersBatch(userId, sourceChatId, env);
   const dateLabel = f.date_mode === 'custom'
     ? `${f.date_from}~${f.date_to}`
+    : f.date_mode === 'after'
+    ? `≥${f.date_from}`
+    : f.date_mode === 'before'
+    ? `≤${f.date_to}`
     : ({ all: '不限', today: '今天', d7: '近7天', d30: '近30天', year: '今年' }[f.date_mode] || '不限');
-  const durLabel = f.duration_mode === 'custom'
+  const durLabel = f.duration_mode === 'gt'
+    ? `>${f.duration_min}s`
+    : f.duration_mode === 'lt'
+    ? `<${f.duration_max}s`
+    : f.duration_mode === 'range'
+    ? `${f.duration_min}~${f.duration_max}s`
+    : f.duration_mode === 'custom'
     ? `≤${f.duration_max}s`
     : ({ all: '不限', s30: '≤30s', s60: '≤60s', s120: '≤120s', s300: '≤5分钟' }[f.duration_mode] || '不限');
+
+  // 🌟 V5.10: 发送者标签
+  let senderLabel = '不限';
+  if (f.sender_user_id === 'null') {
+    senderLabel = '默认资源';
+  } else if (f.sender_user_id !== '') {
+    const row = await env.D1.prepare(`SELECT first_name FROM user_roster WHERE user_id = ?`).bind(parseInt(f.sender_user_id, 10)).first();
+    senderLabel = row?.first_name || `用户${f.sender_user_id}`;
+  }
+
   const sc = sourceChatId;
   const text = `🔍 **随机抽取筛选器**\n`
     + `（仅影响当前群组的随机抽取功能）\n\n`
     + `🎨 媒体类型：${FILTER_MEDIA_LABEL[f.media_type] || '全部'}\n`
     + `📅 收录时间：${dateLabel}\n`
-    + `⏱ 视频时长：${durLabel}`;
+    + `⏱ 视频时长：${durLabel}\n`
+    + `👤 发送者：${senderLabel}`;
   const keyboard = {
     inline_keyboard: [
       [{ text: `🎨 类型：${FILTER_MEDIA_LABEL[f.media_type]} 🔄`, callback_data: `filter_media|${sc}` }],
@@ -1306,6 +1693,7 @@ async function showFilterPanel(userId, chatId, msgId, sourceChatId, env) {
         { text: `📅 时间：${dateLabel} ➡️`, callback_data: `filter_time_panel|${sc}` },
         { text: `⏱ 时长：${durLabel} ➡️`,  callback_data: `filter_dur_panel|${sc}` }
       ],
+      [{ text: `👤 发送者：${senderLabel} ➡️`, callback_data: `filter_sender_panel|${sc}|0` }],
       [
         { text: "🗑️ 清除所有筛选", callback_data: `filter_reset|${sc}` },
         { text: "🏠 返回主菜单",   callback_data: "main_menu" }
@@ -1320,16 +1708,37 @@ async function sendFilterPanelNew(userId, chatId, topicId, sourceChatId, success
   const f = await getUserFiltersBatch(userId, sourceChatId, env);
   const dateLabel = f.date_mode === 'custom'
     ? `${f.date_from}~${f.date_to}`
+    : f.date_mode === 'after'
+    ? `≥${f.date_from}`
+    : f.date_mode === 'before'
+    ? `≤${f.date_to}`
     : ({ all: '不限', today: '今天', d7: '近7天', d30: '近30天', year: '今年' }[f.date_mode] || '不限');
-  const durLabel = f.duration_mode === 'custom'
+  const durLabel = f.duration_mode === 'gt'
+    ? `>${f.duration_min}s`
+    : f.duration_mode === 'lt'
+    ? `<${f.duration_max}s`
+    : f.duration_mode === 'range'
+    ? `${f.duration_min}~${f.duration_max}s`
+    : f.duration_mode === 'custom'
     ? `≤${f.duration_max}s`
     : ({ all: '不限', s30: '≤30s', s60: '≤60s', s120: '≤120s', s300: '≤5分钟' }[f.duration_mode] || '不限');
+
+  // 🌟 V5.10: 发送者标签
+  let senderLabel = '不限';
+  if (f.sender_user_id === 'null') {
+    senderLabel = '默认资源';
+  } else if (f.sender_user_id !== '') {
+    const sRow = await env.D1.prepare(`SELECT first_name FROM user_roster WHERE user_id = ?`).bind(parseInt(f.sender_user_id, 10)).first();
+    senderLabel = sRow?.first_name || `用户${f.sender_user_id}`;
+  }
+
   const sc = sourceChatId;
   const text = `${successText}\n\n`
     + `🔍 **当前筛选状态**\n`
     + `🎨 类型：${FILTER_MEDIA_LABEL[f.media_type] || '全部'}\n`
     + `📅 时间：${dateLabel}\n`
-    + `⏱ 时长：${durLabel}`;
+    + `⏱ 时长：${durLabel}\n`
+    + `👤 发送者：${senderLabel}`;
   const keyboard = {
     inline_keyboard: [
       [{ text: `🎨 类型：${FILTER_MEDIA_LABEL[f.media_type]} 🔄`, callback_data: `filter_media|${sc}` }],
@@ -1337,6 +1746,7 @@ async function sendFilterPanelNew(userId, chatId, topicId, sourceChatId, success
         { text: `📅 时间：${dateLabel} ➡️`, callback_data: `filter_time_panel|${sc}` },
         { text: `⏱ 时长：${durLabel} ➡️`,  callback_data: `filter_dur_panel|${sc}` }
       ],
+      [{ text: `👤 发送者：${senderLabel} ➡️`, callback_data: `filter_sender_panel|${sc}|0` }],
       [
         { text: "🗑️ 清除所有筛选", callback_data: `filter_reset|${sc}` },
         { text: "🏠 返回主菜单",   callback_data: "main_menu_new" }
@@ -1351,17 +1761,26 @@ async function showFilterTimePanel(userId, chatId, msgId, sourceChatId, env) {
   const f = await getUserFiltersBatch(userId, sourceChatId, env);
   const ck = (val) => f.date_mode === val ? '✅ ' : '';
   const ckC = f.date_mode === 'custom' ? '✅ ' : '';
+  const ckA = f.date_mode === 'after' ? '✅ ' : '';
+  const ckB = f.date_mode === 'before' ? '✅ ' : '';
   const sc = sourceChatId;
   const keyboard = {
     inline_keyboard: [
       [{ text: `${ck('all')}不限`,   callback_data: `filter_time_all|${sc}` },  { text: `${ck('today')}今天`,  callback_data: `filter_time_today|${sc}` }],
       [{ text: `${ck('d7')}近7天`,   callback_data: `filter_time_d7|${sc}` },   { text: `${ck('d30')}近30天`,  callback_data: `filter_time_d30|${sc}` }],
       [{ text: `${ck('year')}今年`,   callback_data: `filter_time_year|${sc}` }],
+      [{ text: `${ckA}≥ 某日期`, callback_data: `filter_time_after|${sc}` }, { text: `${ckB}≤ 某日期`, callback_data: `filter_time_before|${sc}` }],
       [{ text: `${ckC}✏️ 自定义时间段`, callback_data: `filter_time_custom|${sc}` }],
       [{ text: "⬅️ 返回筛选器",     callback_data: `filter_panel|${sc}` }]
     ]
   };
-  const label = f.date_mode === 'custom' ? `${f.date_from}~${f.date_to}` : ({ all:'不限', today:'今天', d7:'近7天', d30:'近30天', year:'今年' }[f.date_mode] || '不限');
+  const label = f.date_mode === 'custom'
+    ? `${f.date_from}~${f.date_to}`
+    : f.date_mode === 'after'
+    ? `≥${f.date_from}`
+    : f.date_mode === 'before'
+    ? `≤${f.date_to}`
+    : ({ all:'不限', today:'今天', d7:'近7天', d30:'近30天', year:'今年' }[f.date_mode] || '不限');
   await tgAPI('editMessageText', {
     chat_id: chatId, message_id: msgId,
     text: `📅 **收录时间筛选**\n当前：${label}\n\n请选择时间范围：`,
@@ -1373,23 +1792,104 @@ async function showFilterTimePanel(userId, chatId, msgId, sourceChatId, env) {
 async function showFilterDurPanel(userId, chatId, msgId, sourceChatId, env) {
   const f = await getUserFiltersBatch(userId, sourceChatId, env);
   const ck = (val) => f.duration_mode === val ? '✅ ' : '';
-  const ckC = f.duration_mode === 'custom' ? '✅ ' : '';
   const sc = sourceChatId;
   const keyboard = {
     inline_keyboard: [
       [{ text: `${ck('all')}不限`,      callback_data: `filter_dur_all|${sc}` },  { text: `${ck('s30')}≤30秒`,   callback_data: `filter_dur_s30|${sc}` }],
       [{ text: `${ck('s60')}≤60秒`,     callback_data: `filter_dur_s60|${sc}` },  { text: `${ck('s120')}≤120秒`, callback_data: `filter_dur_s120|${sc}` }],
-      [{ text: `${ck('s300')}≤5分钟`,   callback_data: `filter_dur_s300|${sc}` }],
-      [{ text: `${ckC}✏️ 自定义秒数`,   callback_data: `filter_dur_custom|${sc}` }],
+      [{ text: `${ck('s300')}≤5分钟`,   callback_data: `filter_dur_s300|${sc}` }, { text: `${ck('custom')}✏️ ≤自定义`, callback_data: `filter_dur_custom|${sc}` }],
+      [{ text: `${ck('gt')}>大于`,      callback_data: `filter_dur_gt|${sc}` },   { text: `${ck('lt')}<小于`,    callback_data: `filter_dur_lt|${sc}` }],
+      [{ text: `${ck('range')}📏 区间`, callback_data: `filter_dur_range|${sc}` }],
       [{ text: "⬅️ 返回筛选器",        callback_data: `filter_panel|${sc}` }]
     ]
   };
-  const durLabel = f.duration_mode === 'custom'
-    ? `≤${f.duration_max}s`
-    : ({ all:'不限', s30:'≤30s', s60:'≤60s', s120:'≤120s', s300:'≤5分钟' }[f.duration_mode] || '不限');
+  let durLabel = '不限';
+  if (f.duration_mode === 'gt' && f.duration_min) {
+    durLabel = `>${f.duration_min}s`;
+  } else if (f.duration_mode === 'lt' && f.duration_max) {
+    durLabel = `<${f.duration_max}s`;
+  } else if (f.duration_mode === 'range' && f.duration_min && f.duration_max) {
+    durLabel = `${f.duration_min}~${f.duration_max}s`;
+  } else if (f.duration_mode === 'custom' && f.duration_max) {
+    durLabel = `≤${f.duration_max}s`;
+  } else if (Object.prototype.hasOwnProperty.call(FILTER_DURATION_PRESET_MAP, f.duration_mode)) {
+    durLabel = { s30:'≤30s', s60:'≤60s', s120:'≤120s', s300:'≤5分钟' }[f.duration_mode];
+  }
   await tgAPI('editMessageText', {
     chat_id: chatId, message_id: msgId,
-    text: `⏱ **视频时长筛选**\n当前：${durLabel}\n\n输入 N 秒后，仅显示 0~N 秒的视频：`,
+    text: `⏱ **视频时长筛选**\n当前：${durLabel}\n\n💡 支持：预设值、自定义上限、大于、小于、区间`,
+    parse_mode: 'Markdown', reply_markup: keyboard
+  }, env);
+}
+
+// 🌟 V5.10: 发送者筛选子面板（带数量显示，分页）
+async function showFilterSenderPanel(userId, chatId, msgId, sourceChatId, page, env) {
+  const f = await getUserFiltersBatch(userId, sourceChatId, env);
+  const sc = sourceChatId;
+  const pageSize = 5;
+  const offset = page * pageSize;
+
+  // 查询各发送者媒体数量（含 NULL 作为"默认资源"）
+  const countRes = await env.D1.prepare(
+    `SELECT m.sender_user_id, r.first_name, COUNT(*) as cnt FROM media_library m LEFT JOIN user_roster r ON m.sender_user_id = r.user_id WHERE m.chat_id = ? GROUP BY m.sender_user_id ORDER BY cnt DESC`
+  ).bind(sourceChatId).all();
+  const rows = (countRes.results || []);
+
+  // 分离 NULL（默认资源）和正常发送者
+  const defaultRow = rows.find(r => r.sender_user_id === null);
+  const senderRows = rows.filter(r => r.sender_user_id !== null);
+  const totalSenders = senderRows.length + (defaultRow ? 1 : 0);
+
+  // 构建分页键盘
+  const keyboard = { inline_keyboard: [] };
+
+  // 「不限」选项（始终在第一行）
+  const isAll = f.sender_user_id === '';
+  keyboard.inline_keyboard.push([{ text: `${isAll ? '✅ ' : ''}不限`, callback_data: `filter_sender_all|${sc}` }]);
+
+  // 分页切片的发送者列表
+  const pagedSenders = senderRows.slice(offset, offset + pageSize);
+
+  for (const row of pagedSenders) {
+    const name = row.first_name || `用户${row.sender_user_id}`;
+    const isSelected = f.sender_user_id === String(row.sender_user_id);
+    keyboard.inline_keyboard.push([{
+      text: `${isSelected ? '✅ ' : ''}${name} (${row.cnt})`,
+      callback_data: `filter_sender_set|${sc}|${row.sender_user_id}`
+    }]);
+  }
+
+  // 「默认资源」行（仅在第一页显示，如有数据）
+  if (defaultRow && page === 0) {
+    const isNull = f.sender_user_id === 'null';
+    keyboard.inline_keyboard.push([{
+      text: `${isNull ? '✅ ' : ''}默认资源 (${defaultRow.cnt})`,
+      callback_data: `filter_sender_null|${sc}`
+    }]);
+  }
+
+  // 导航行
+  const navRow = [];
+  if (page > 0) {
+    navRow.push({ text: '⬅️ 上一页', callback_data: `filter_sender_panel|${sc}|${page - 1}` });
+  }
+  if (offset + pageSize < senderRows.length) {
+    navRow.push({ text: '下一页 ➡️', callback_data: `filter_sender_panel|${sc}|${page + 1}` });
+  }
+  if (navRow.length > 0) keyboard.inline_keyboard.push(navRow);
+
+  // 返回按钮
+  keyboard.inline_keyboard.push([{ text: '⬅️ 返回筛选器', callback_data: `filter_panel|${sc}` }]);
+
+  const selLabel = f.sender_user_id === 'null'
+    ? '默认资源'
+    : f.sender_user_id !== ''
+    ? (senderRows.find(r => String(r.sender_user_id) === f.sender_user_id)?.first_name || `用户${f.sender_user_id}`)
+    : '不限';
+
+  await tgAPI('editMessageText', {
+    chat_id: chatId, message_id: msgId,
+    text: `👤 **发送者筛选**\n当前：${selLabel}\n（共 ${totalSenders} 位发送者）`,
     parse_mode: 'Markdown', reply_markup: keyboard
   }, env);
 }
@@ -1468,7 +1968,7 @@ async function sendRandomMedia(userId, chatId, msgId, topicId, category, sourceC
     getUserFiltersBatch(userId, sourceChatId, env)
   ]);
   const filterActive = isFilterActive(filters);
-  const filterStatus = filterActive ? renderFilterStatus(filters) : null;
+  const filterStatus = filterActive ? await renderFilterStatus(filters, env) : null;
   const mode = settings.display_mode;
   const useAntiRepeat = settings.anti_repeat === 'true';
   const autoJump = settings.auto_jump === 'true';
@@ -2562,8 +3062,9 @@ async function isUserInGroup(groupId, userId, env) {
 async function handleExternalImport(dataBatch, env) {
   if (!dataBatch || !Array.isArray(dataBatch)) return;
   const stmts = dataBatch.map(item => {
-    return env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(item.message_id, item.chat_id || 0, item.topic_id || null, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption || '', Number.isInteger(item.duration) ? item.duration : null);
+    const normalizedRawMessageJson = normalizeStoredMediaPayload(item.raw_message_json ?? item.raw_message ?? item.raw_message_data ?? item.telegram_message ?? item.extra, 'external_import');
+    return env.D1.prepare(`INSERT INTO media_library (message_id, chat_id, topic_id, category_name, file_unique_id, file_id, media_type, caption, duration, raw_message_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(item.message_id, item.chat_id || 0, item.topic_id || null, item.category_name, item.file_unique_id, item.file_id, item.media_type, item.caption || '', Number.isInteger(item.duration) ? item.duration : null, normalizedRawMessageJson);
   });
   if (stmts.length > 0) await env.D1.batch(stmts);
 }
@@ -2603,19 +3104,59 @@ function normalizeFilters(raw = {}) {
   if (!FILTER_DURATION_MODES.has(out.duration_mode)) out.duration_mode = FILTER_DEFAULTS.duration_mode;
   out.date_from = FILTER_DATE_RE.test(String(out.date_from || '')) ? String(out.date_from) : '';
   out.date_to   = FILTER_DATE_RE.test(String(out.date_to   || '')) ? String(out.date_to)   : '';
-  const maxVal  = String(out.duration_max ?? '').trim();
-  out.duration_max = /^(0|[1-9]\d*)$/.test(maxVal) ? maxVal : '';
+
+  const parseDurationValue = (value) => {
+    const str = String(value ?? '').trim();
+    return /^(0|[1-9]\d*)$/.test(str) ? str : '';
+  };
+  out.duration_min = parseDurationValue(out.duration_min);
+  out.duration_max = parseDurationValue(out.duration_max);
+
+  // 校验 custom 模式：需要两个日期且起始不晚于结束
   if (out.date_mode === 'custom' && (!out.date_from || !out.date_to || out.date_from > out.date_to)) {
     out.date_mode = 'all'; out.date_from = ''; out.date_to = '';
   }
-  if (out.duration_mode === 'custom' && out.duration_max === '') out.duration_mode = 'all';
+  // 校验 after 模式：需要 date_from
+  if (out.date_mode === 'after' && !out.date_from) {
+    out.date_mode = 'all'; out.date_from = '';
+  }
+  // 校验 before 模式：需要 date_to
+  if (out.date_mode === 'before' && !out.date_to) {
+    out.date_mode = 'all'; out.date_to = '';
+  }
+
+  if (out.duration_mode === 'gt' && out.duration_min === '') {
+    out.duration_mode = 'all';
+  }
+  if (out.duration_mode === 'lt' && out.duration_max === '') {
+    out.duration_mode = 'all';
+  }
+  if (out.duration_mode === 'range' && (out.duration_min === '' || out.duration_max === '' || Number(out.duration_min) >= Number(out.duration_max))) {
+    out.duration_mode = 'all';
+    out.duration_min = '';
+    out.duration_max = '';
+  }
+  if (out.duration_mode === 'custom' && out.duration_max === '') {
+    out.duration_mode = 'all';
+  }
+
+  // 🌟 V5.10: sender_user_id 校验
+  const senderStr = String(out.sender_user_id ?? '').trim();
+  if (senderStr === '' || senderStr === 'null') {
+    out.sender_user_id = senderStr; // 有效值：空 或 'null'
+  } else if (/^[1-9]\d*$/.test(senderStr)) {
+    out.sender_user_id = senderStr; // 有效正整数
+  } else {
+    out.sender_user_id = ''; // 非法值降级
+  }
+
   return out;
 }
 
 // 判断过滤器是否被激活（任意维度非默认即激活）
 function isFilterActive(filters) {
   const f = normalizeFilters(filters);
-  return f.media_type !== 'all' || f.date_mode !== 'all' || f.duration_mode !== 'all';
+  return f.media_type !== 'all' || f.date_mode !== 'all' || f.duration_mode !== 'all' || f.sender_user_id !== '';
 }
 
 // 构建安全 SQL WHERE 子句（所有用户值全部 bind，绝不拼接）
@@ -2637,34 +3178,98 @@ function buildFilterWhereClause(filters, alias = 'm') {
       clauses.push(`AND datetime(${alias}.added_at) >= datetime('now', '-30 days')`); break;
     case 'year':
       clauses.push(`AND strftime('%Y', ${alias}.added_at) = strftime('%Y', 'now')`); break;
+    case 'after':
+      clauses.push(`AND date(${alias}.added_at) >= date(?)`);
+      binds.push(f.date_from); break;
+    case 'before':
+      clauses.push(`AND date(${alias}.added_at) <= date(?)`);
+      binds.push(f.date_to); break;
     case 'custom':
       clauses.push(`AND date(${alias}.added_at) >= date(?) AND date(${alias}.added_at) <= date(?)`);
       binds.push(f.date_from, f.date_to); break;
   }
-  let durationMax = null;
-  if (f.duration_mode === 'custom') {
-    durationMax = parseInt(f.duration_max, 10);
-  } else if (Object.prototype.hasOwnProperty.call(FILTER_DURATION_PRESET_MAP, f.duration_mode)) {
-    durationMax = FILTER_DURATION_PRESET_MAP[f.duration_mode];
+
+  // 时长筛选逻辑（支持 gt/lt/range/custom/预设）
+  if (f.duration_mode === 'gt' && f.duration_min) {
+    const minVal = parseInt(f.duration_min, 10);
+    if (Number.isInteger(minVal) && minVal >= 0) {
+      clauses.push(`AND ${alias}.duration IS NOT NULL AND ${alias}.duration > ?`);
+      binds.push(minVal);
+    }
+  } else if (f.duration_mode === 'lt' && f.duration_max) {
+    const maxVal = parseInt(f.duration_max, 10);
+    if (Number.isInteger(maxVal) && maxVal >= 0) {
+      clauses.push(`AND ${alias}.duration IS NOT NULL AND ${alias}.duration < ?`);
+      binds.push(maxVal);
+    }
+  } else if (f.duration_mode === 'range' && f.duration_min && f.duration_max) {
+    const minVal = parseInt(f.duration_min, 10);
+    const maxVal = parseInt(f.duration_max, 10);
+    if (Number.isInteger(minVal) && Number.isInteger(maxVal) && minVal >= 0 && maxVal >= 0 && minVal < maxVal) {
+      clauses.push(`AND ${alias}.duration IS NOT NULL AND ${alias}.duration BETWEEN ? AND ?`);
+      binds.push(minVal, maxVal);
+    }
+  } else {
+    // custom 或预设模式（≤ 上限）
+    let durationMax = null;
+    if (f.duration_mode === 'custom' && f.duration_max) {
+      durationMax = parseInt(f.duration_max, 10);
+    } else if (Object.prototype.hasOwnProperty.call(FILTER_DURATION_PRESET_MAP, f.duration_mode)) {
+      durationMax = FILTER_DURATION_PRESET_MAP[f.duration_mode];
+    }
+    if (Number.isInteger(durationMax) && durationMax >= 0) {
+      clauses.push(`AND ${alias}.duration IS NOT NULL AND ${alias}.duration <= ?`);
+      binds.push(durationMax);
+    }
   }
-  if (Number.isInteger(durationMax) && durationMax >= 0) {
-    clauses.push(`AND ${alias}.duration IS NOT NULL AND ${alias}.duration <= ?`);
-    binds.push(durationMax);
+
+  // 🌟 V5.10: 发送者筛选
+  if (f.sender_user_id === 'null') {
+    clauses.push(`AND ${alias}.sender_user_id IS NULL`);
+  } else if (f.sender_user_id !== '') {
+    clauses.push(`AND ${alias}.sender_user_id = ?`);
+    binds.push(parseInt(f.sender_user_id, 10));
   }
+
   return { sql: clauses.length ? ` ${clauses.join(' ')}` : '', binds, normalized: f };
 }
 
-// 生成人类可读过滤状态文本
-function renderFilterStatus(filters) {
+// 生成人类可读过滤状态文本（异步：需查询发送者名称）
+async function renderFilterStatus(filters, env) {
   const f = normalizeFilters(filters);
   const mediaLabel = { all:'全部', photo:'仅图片', video:'仅视频', animation:'仅动图' }[f.media_type] || '全部';
   const dateLabel = f.date_mode === 'custom'
     ? `${f.date_from}~${f.date_to}`
+    : f.date_mode === 'after'
+    ? `≥${f.date_from}`
+    : f.date_mode === 'before'
+    ? `≤${f.date_to}`
     : ({ all:'不限', today:'今天', d7:'近7天', d30:'近30天', year:'今年' }[f.date_mode] || '不限');
-  const durLabel = f.duration_mode === 'custom'
-    ? `≤${f.duration_max}s`
-    : ({ all:'不限', s30:'≤30s', s60:'≤60s', s120:'≤120s', s300:'≤5分钟' }[f.duration_mode] || '不限');
-  return `类型:${mediaLabel} | 时间:${dateLabel} | 时长:${durLabel}`;
+
+  let durLabel = '不限';
+  if (f.duration_mode === 'gt' && f.duration_min) {
+    durLabel = `>${f.duration_min}s`;
+  } else if (f.duration_mode === 'lt' && f.duration_max) {
+    durLabel = `<${f.duration_max}s`;
+  } else if (f.duration_mode === 'range' && f.duration_min && f.duration_max) {
+    durLabel = `${f.duration_min}~${f.duration_max}s`;
+  } else if (f.duration_mode === 'custom' && f.duration_max) {
+    durLabel = `≤${f.duration_max}s`;
+  } else if (Object.prototype.hasOwnProperty.call(FILTER_DURATION_PRESET_MAP, f.duration_mode)) {
+    durLabel = { s30:'≤30s', s60:'≤60s', s120:'≤120s', s300:'≤5分钟' }[f.duration_mode];
+  }
+
+  // 🌟 V5.10: 发送者状态
+  let senderLabel = '不限';
+  if (f.sender_user_id === 'null') {
+    senderLabel = '默认资源';
+  } else if (f.sender_user_id !== '') {
+    const senderId = parseInt(f.sender_user_id, 10);
+    const row = await env.D1.prepare(`SELECT first_name FROM user_roster WHERE user_id = ?`).bind(senderId).first();
+    senderLabel = row?.first_name ? row.first_name : `用户${senderId}`;
+  }
+
+  return `类型:${mediaLabel} | 时间:${dateLabel} | 时长:${durLabel} | 发送者:${senderLabel}`;
 }
 
 // 读取用户过滤器（仿 getSettingsBatch）
