@@ -68,10 +68,15 @@ def process_and_upload():
             "chat_id": TARGET_CHAT_ID,
             "topic_id": None, # 历史数据统一为无 Topic
             "category_name": TARGET_CATEGORY,
-            "file_unique_id": f"import_{TARGET_CHAT_ID}_{msg['id']}", 
-            "file_id": "", 
+            "file_unique_id": f"import_{TARGET_CHAT_ID}_{msg['id']}",
+            "file_id": "",
             "media_type": media_type,
-            "caption": caption[:100] # 截断部分超长文本防止数据库溢出
+            "caption": caption[:100], # 截断部分超长文本防止数据库溢出
+            "duration": int(msg["duration_seconds"]) if isinstance(msg.get("duration_seconds"), (int, float)) else (int(msg["duration"]) if isinstance(msg.get("duration"), (int, float)) else None),
+            "raw_message_json": {
+                "source": "telegram_desktop_export",
+                "message": msg
+            }
         })
 
     total = len(valid_media)
