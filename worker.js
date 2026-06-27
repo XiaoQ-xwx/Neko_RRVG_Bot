@@ -1829,10 +1829,43 @@ async function showFilterSenderPanel(userId, chatId, msgId, sourceChatId, page, 
   const pageSize = 5;
   const offset = page * pageSize;
 
-  // 查询各发送者媒体数量（含 NULL 作为"默认资源"）
-  const countRes = await env.D1.prepare(
-    `SELECT m.sender_user_id, r.first_name, COUNT(*) as cnt FROM media_library m LEFT JOIN user_roster r ON m.sender_user_id = r.user_id WHERE m.chat_id = ? GROUP BY m.sender_user_id ORDER BY cnt DESC`
-  ).bind(sourceChatId).all();
+  let countRes;
+  try {
+    // 查询各发送者媒体数量（含 NULL 作为"默认资源"）
+    countRes = await env.D1.prepare(
+      `SELECT m.sender_user_id, r.first_name, COUNT(*) as cnt FROM media_library m LEFT JOIN user_roster r ON m.sender_user_id = r.user_id WHERE m.chat_id = ? GROUP BY m.sender_user_id ORDER BY cnt DESC`
+    ).bind(sourceChatId).all();
+  } catch (e) {
+    const msg = String(e?.message || '');
+    // 列不存在 → 尝试内联迁移
+    if (/no such column.*sender_user_id/i.test(msg)) {
+      try {
+        await env.D1.prepare(`ALTER TABLE media_library ADD COLUMN sender_user_id INTEGER DEFAULT NULL;`).run();
+        await env.D1.prepare(`CREATE INDEX IF NOT EXISTS idx_media_chat_sender ON media_library (chat_id, sender_user_id);`).run();
+        // 重试查询
+        countRes = await env.D1.prepare(
+          `SELECT m.sender_user_id, r.first_name, COUNT(*) as cnt FROM media_library m LEFT JOIN user_roster r ON m.sender_user_id = r.user_id WHERE m.chat_id = ? GROUP BY m.sender_user_id ORDER BY cnt DESC`
+        ).bind(sourceChatId).all();
+      } catch (e2) {
+        console.error('sender_user_id 列内联迁移失败:', e2?.message);
+        return tgAPI('editMessageText', {
+          chat_id: chatId, message_id: msgId,
+          text: `⚠️ 发送者筛选初始化失败！\n请访问 Worker 域名触发数据库迁移喵～\n\n💡 \`${(e2?.message || e.message || '未知错误').substring(0, 80)}\``,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[{ text: '⬅️ 返回筛选器', callback_data: `filter_panel|${sc}` }]] }
+        }, env);
+      }
+    } else {
+      console.error('showFilterSenderPanel 查询失败:', msg);
+      return tgAPI('editMessageText', {
+        chat_id: chatId, message_id: msgId,
+        text: `⚠️ 发送者数据读取失败喵～\n\n💡 \`${msg.substring(0, 100)}\``,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ 返回筛选器', callback_data: `filter_panel|${sc}` }]] }
+      }, env);
+    }
+  }
+
   const rows = (countRes.results || []);
 
   // 分离 NULL（默认资源）和正常发送者
