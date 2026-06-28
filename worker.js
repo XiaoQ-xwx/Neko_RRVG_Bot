@@ -41,6 +41,10 @@ const GROUP_MEMBER_CACHE_TTL_MS = 60_000;
 const GROUP_MEMBER_CACHE_MAX = 4096;
 const groupMembershipCache = new Map();
 
+// Bot 自身 username 缓存（实例级，跨请求共享；username 不会变更，命中后长期有效）
+// 用于解析群组命令的 @机器人名 后缀，避免抢答其他机器人的指令
+let botUsernameCache = null;
+
 function isCancelInput(input, botUsername) {
   if (!input) return false;
   const trimmed = input.trim();
@@ -69,6 +73,50 @@ function isAddressedBotCommand(text, commandName, botUsername) {
   // 无法确认 @目标是否为自己时保守忽略，避免抢答其他机器人的指令。
   if (!botUsername) return false;
   return mentionedBot.toLowerCase() === botUsername.toLowerCase();
+}
+
+// 精确匹配无参数命令：/cmd 或 /cmd@bot（结尾必须是 $，不允许后续参数）
+// 用于 /bd /bmv 这类带子命令的命令，避免把 /bd end 误判为 /bd
+function matchesBotCommandExact(text, commandName, botUsername) {
+  if (!text || !commandName) return false;
+
+  const match = text.match(/^\/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?$/i);
+  if (!match) return false;
+  if (match[1].toLowerCase() !== commandName.toLowerCase()) return false;
+
+  const mentionedBot = match[2];
+  if (!mentionedBot) return true;
+  if (!botUsername) return false;
+  return mentionedBot.toLowerCase() === botUsername.toLowerCase();
+}
+
+// 匹配带固定子命令的命令：/cmd arg、/cmd@bot arg（arg 为字面子命令如 'end'/'cancel'）
+function matchesBotCommandWithArg(text, commandName, arg, botUsername) {
+  if (!text || !commandName || arg == null) return false;
+  const escArg = String(arg).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = text.match(new RegExp('^\\/' + commandName + '(?:@([A-Za-z0-9_]+))?\\s+' + escArg + '$', 'i'));
+  if (!match) return false;
+  const mentionedBot = match[1];
+  if (!mentionedBot) return true;
+  if (!botUsername) return false;
+  return mentionedBot.toLowerCase() === botUsername.toLowerCase();
+}
+
+// 获取 Bot 自身 username：优先环境变量 BOT_USERNAME，其次实例缓存，最后 getMe 拉取并缓存
+async function getBotUsername(env) {
+  if (env.BOT_USERNAME) return env.BOT_USERNAME;
+  if (botUsernameCache) return botUsernameCache;
+  try {
+    const res = await tgAPI('getMe', {}, env);
+    const data = await res.json();
+    if (data?.ok && data?.result?.username) {
+      botUsernameCache = data.result.username;
+      return botUsernameCache;
+    }
+  } catch (e) {
+    console.warn('getMe 获取 bot username 失败:', e?.message);
+  }
+  return null;
 }
 
 function safeJSONStringify(value) {
@@ -463,22 +511,25 @@ async function handleMessage(message, env, ctx) {
   const topicId = message.message_thread_id || null;
   const userId = message.from.id;
 
-  if (isAddressedBotCommand(text, 'start', env.BOT_USERNAME)) return sendMainMenu(chatId, topicId, env, userId);
+  // 解析本机 username（getMe 缓存），用于群组命令的 @后缀 路由
+  const botUsername = await getBotUsername(env);
 
-  if (text.startsWith('/help')) {
+  if (isAddressedBotCommand(text, 'start', botUsername)) return sendMainMenu(chatId, topicId, env, userId);
+
+  if (isAddressedBotCommand(text, 'help', botUsername)) {
     const helpText = `📖 **籽青的说明书喵~ (≧∇≦)**\n/start - 唤出籽青的主菜单\n\n**【管理员专属指令喵】**\n/bind <分类名> - 将当前话题绑定为采集库\n/bind_output - 将当前话题设为专属推送展示窗口\n/import_json - 获取关于导入历史消息的说明\n\n**【快捷管理魔法】**\n直接回复某张图片/视频：\n发送 \`/d\` - 彻底抹除它\n发送 \`/mv\` - 将它转移到其他分类\n发送 \`/list\` - 查看它的收录信息\n发送 \`/list debug\` - 查看它的回填与原始元数据状态\n\n**【批量操作】**\n\`/d <数量|all>\` - 批量删除当前分类最近N条\n\`/mv <数量|all> <分类名>\` - 批量转移\n\`/bd\` - 进入精确批量删除模式（转发选择）\n\`/bmv\` - 进入精确批量转移模式（转发选择）`;
     await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: helpText, parse_mode: 'Markdown' }, env);
     return;
   }
 
-  if (text.startsWith('/import_json')) {
+  if (isAddressedBotCommand(text, 'import_json', botUsername)) {
     const importHelp = `📥 **关于导入历史数据喵**\n\n籽青有两种方法可以吃掉历史数据哦：\n\n1. **直接投喂 (适合 5MB 以内的小包裹)**：直接把 \`.json\` 文件发给籽青,并在文件的说明(Caption)里写上 \`/import 分类名\` 即可！\n2. **脚本投喂 (适合大包裹)**：在电脑上运行配套的 Python 导入脚本,慢慢喂给籽青！QwQ`;
     await tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: importHelp, parse_mode: 'Markdown' }, env);
     return;
   }
 
-  // 🌟 V5.7: /bd 批量删除会话模式（必须在 /bind 之前，精确匹配）
-  if (text === '/bd' || text === '/bd@' + (env.BOT_USERNAME || '')) {
+  // 🌟 V5.7: /bd 批量删除会话模式（必须在 /bind 之前，精确匹配，支持 @机器人名 后缀）
+  if (matchesBotCommandExact(text, 'bd', botUsername)) {
     if (!(await isAdmin(chatId, userId, env))) {
       return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "🚨 只有管理员才能使用批量模式哦！" }, env);
     }
@@ -487,7 +538,7 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "🗑️ 已进入**批量删除模式**喵！\n\n请把要删除的媒体转发给籽青～\n每收到一条籽青会确认收集。\n\n完成后发送 `/bd end` 确认删除\n取消请发送 `/bd cancel`\n⏰ 5分钟后自动过期", parse_mode: 'Markdown' }, env);
   }
 
-  if (text === '/bd end') {
+  if (matchesBotCommandWithArg(text, 'bd', 'end', botUsername)) {
     const session = await env.D1.prepare(`SELECT * FROM batch_sessions WHERE chat_id = ? AND user_id = ? AND mode = 'bd'`).bind(chatId, userId).first();
     if (!session) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "喵？你还没有进入批量删除模式哦～" }, env);
     if (Date.now() - new Date(session.created_at + 'Z').getTime() > 300000) {
@@ -502,15 +553,15 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `📋 已收集 ${ids.length} 条媒体记录，确认全部删除吗喵？`, reply_markup: { inline_keyboard: [[{ text: "✅ 确认删除", callback_data: "bs_cfm_d" }, { text: "❌ 取消", callback_data: "bs_cancel" }]] } }, env);
   }
 
-  if (text === '/bd cancel') {
+  if (matchesBotCommandWithArg(text, 'bd', 'cancel', botUsername)) {
     const session = await env.D1.prepare(`SELECT id FROM batch_sessions WHERE chat_id = ? AND user_id = ? AND mode = 'bd'`).bind(chatId, userId).first();
     if (!session) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "当前没有进行中的批量删除操作喵～" }, env);
     await env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(session.id).run();
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "已退出批量删除模式喵～" }, env);
   }
 
-  // 🌟 V5.7: /bmv 批量转移会话模式
-  if (text === '/bmv' || text === '/bmv@' + (env.BOT_USERNAME || '')) {
+  // 🌟 V5.7: /bmv 批量转移会话模式（精确匹配，支持 @机器人名 后缀）
+  if (matchesBotCommandExact(text, 'bmv', botUsername)) {
     if (!(await isAdmin(chatId, userId, env))) {
       return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "🚨 只有管理员才能使用批量模式哦！" }, env);
     }
@@ -519,7 +570,7 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "🔀 已进入**批量转移模式**喵！\n\n请把要转移的媒体转发给籽青～\n\n完成后发送 `/bmv end` 选择目标分类\n取消请发送 `/bmv cancel`\n⏰ 5分钟后自动过期", parse_mode: 'Markdown' }, env);
   }
 
-  if (text === '/bmv end') {
+  if (matchesBotCommandWithArg(text, 'bmv', 'end', botUsername)) {
     const session = await env.D1.prepare(`SELECT * FROM batch_sessions WHERE chat_id = ? AND user_id = ? AND mode = 'bmv'`).bind(chatId, userId).first();
     if (!session) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "喵？你还没有进入批量转移模式哦～" }, env);
     if (Date.now() - new Date(session.created_at + 'Z').getTime() > 300000) {
@@ -540,15 +591,15 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `📋 已收集 ${ids.length} 条媒体记录，请选择目标分类喵：`, reply_markup: { inline_keyboard: keyboard } }, env);
   }
 
-  if (text === '/bmv cancel') {
+  if (matchesBotCommandWithArg(text, 'bmv', 'cancel', botUsername)) {
     const session = await env.D1.prepare(`SELECT id FROM batch_sessions WHERE chat_id = ? AND user_id = ? AND mode = 'bmv'`).bind(chatId, userId).first();
     if (!session) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "当前没有进行中的批量转移操作喵～" }, env);
     await env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(session.id).run();
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "已退出批量转移模式喵～" }, env);
   }
 
-  // 🌟 V5.8+: /list — 查询回复媒体的收录记录（支持 /list debug）
-  if (message.reply_to_message && text.startsWith('/list')) {
+  // 🌟 V5.8+: /list — 查询回复媒体的收录记录（支持 /list debug 与 @机器人名 后缀）
+  if (message.reply_to_message && isAddressedBotCommand(text, 'list', botUsername)) {
     const isListDebug = /^\/list(?:@[^\s]+)?\s+debug$/i.test(text.trim());
     const replyMsg = message.reply_to_message;
     const info = extractMediaInfo(replyMsg);
@@ -682,9 +733,11 @@ async function handleMessage(message, env, ctx) {
 
   // 🌟 快捷回复管理魔法 (/d 和 /mv) — 单条回复模式
   // 排除批量格式：/d <数字|all> 和 /mv <数字|all> <分类>，让它们落到后面的批量路由
-  const isBatchDFormat = /^\/d\s+(all|\d+)$/.test(text);
-  const isBatchMvFormat = /^\/mv\s+(all|\d+)\s+.+$/.test(text);
-  if (message.reply_to_message && (text.startsWith('/d') || text.startsWith('/mv')) && !isBatchDFormat && !isBatchMvFormat) {
+  const isBatchDFormat = /^\/d(?:@[A-Za-z0-9_]+)?\s+(all|\d+)$/i.test(text);
+  const isBatchMvFormat = /^\/mv(?:@[A-Za-z0-9_]+)?\s+(all|\d+)\s+.+$/i.test(text);
+  const isSingleD = isAddressedBotCommand(text, 'd', botUsername);
+  const isSingleMv = isAddressedBotCommand(text, 'mv', botUsername);
+  if (message.reply_to_message && (isSingleD || isSingleMv) && !isBatchDFormat && !isBatchMvFormat) {
     if (!(await isAdmin(chatId, userId, env))) {
       return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, reply_to_message_id: message.message_id, text: "🚨 呜呜，只有管理员主人才可以使用回复魔法哦！" }, env);
     }
@@ -722,8 +775,8 @@ async function handleMessage(message, env, ctx) {
     }
   }
 
-  // 🌟 V5.7: 模式A — /d <N|all> 按数量批量删除（无 reply 时触发）
-  if (!message.reply_to_message && /^\/d\s+(all|\d+)$/.test(text)) {
+  // 🌟 V5.7: 模式A — /d <N|all> 按数量批量删除（无 reply 时触发，支持 @机器人名 后缀）
+  if (!message.reply_to_message && /^\/d(?:@[A-Za-z0-9_]+)?\s+(all|\d+)$/i.test(text)) {
     if (!(await isAdmin(chatId, userId, env))) {
       return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "🚨 只有管理员才能使用批量删除哦！" }, env);
     }
@@ -738,8 +791,8 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `⚠️ 即将删除【${category}】分类的 ${count} 条记录${arg === 'all' ? '（全部）' : '（最近）'}，确认吗喵？`, reply_markup: { inline_keyboard: [[{ text: "✅ 确认删除", callback_data: `bdc_${count}` }, { text: "❌ 取消", callback_data: "cancel_action" }]] } }, env);
   }
 
-  // 🌟 V5.7: 模式A — /mv <N|all> <分类名> 按数量批量转移（无 reply 时触发）
-  if (!message.reply_to_message && /^\/mv\s+(all|\d+)\s+.+$/.test(text)) {
+  // 🌟 V5.7: 模式A — /mv <N|all> <分类名> 按数量批量转移（无 reply 时触发，支持 @机器人名 后缀）
+  if (!message.reply_to_message && /^\/mv(?:@[A-Za-z0-9_]+)?\s+(all|\d+)\s+.+$/i.test(text)) {
     if (!(await isAdmin(chatId, userId, env))) {
       return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "🚨 只有管理员才能使用批量转移哦！" }, env);
     }
@@ -763,9 +816,10 @@ async function handleMessage(message, env, ctx) {
     return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `⚠️ 即将把【${category}】的 ${count} 条记录${arg === 'all' ? '（全部）' : '（最近）'}转移到【${targetCategory}】，确认吗喵？`, reply_markup: { inline_keyboard: [[{ text: "✅ 确认转移", callback_data: `bmc_cfm` }, { text: "❌ 取消", callback_data: "cancel_action" }]] } }, env);
   }
 
-  if (text.startsWith('/bind ')) {
+  const bindMatch = text.match(/^\/bind(?:@([A-Za-z0-9_]+))?\s+(.+)$/i);
+  if (bindMatch && (!bindMatch[1] || (botUsername && bindMatch[1].toLowerCase() === botUsername.toLowerCase()))) {
     if (!(await isAdmin(chatId, userId, env))) return;
-    const category = text.replace('/bind ', '').trim();
+    const category = bindMatch[2].trim();
     if (!category) return;
     await env.D1.prepare(`INSERT INTO config_topics (chat_id, chat_title, topic_id, category_name, bound_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(chatId, message.chat.title || 'Private', topicId, category, userId).run();
@@ -773,7 +827,7 @@ async function handleMessage(message, env, ctx) {
     return;
   }
 
-  if (text.startsWith('/bind_output')) {
+  if (isAddressedBotCommand(text, 'bind_output', botUsername)) {
     if (!(await isAdmin(chatId, userId, env))) return;
     await env.D1.prepare(`INSERT INTO config_topics (chat_id, chat_title, topic_id, category_name, bound_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(chatId, message.chat.title || 'Private', topicId, 'output', userId).run();
@@ -782,12 +836,14 @@ async function handleMessage(message, env, ctx) {
   }
 
   // ==== 完整恢复的内置 JSON 解析功能 ====
-  if (message.document && message.document.file_name && message.document.file_name.endsWith('.json') && text.startsWith('/import ')) {
+  const importMatch = text.match(/^\/import(?:@([A-Za-z0-9_]+))?\s+(.+)$/i);
+  const importForSelf = importMatch && (!importMatch[1] || (botUsername && importMatch[1].toLowerCase() === botUsername.toLowerCase()));
+  if (message.document && message.document.file_name && message.document.file_name.endsWith('.json') && importForSelf) {
     if (!(await isAdmin(chatId, userId, env))) {
       return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `🚨 呜呜,只有管理员主人才可以给籽青投喂文件哦！` }, env);
     }
-    
-    const category = text.replace('/import ', '').trim();
+
+    const category = importMatch[2].trim();
     if (!category) return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: `喵？请在文件说明里写上正确格式,比如：\`/import 分类名\` 哦！` }, env);
 
     if (message.document.file_size > 5242880) {
@@ -876,7 +932,7 @@ async function handleMessage(message, env, ctx) {
       }
 
       // 取消操作
-      if (isCancelInput(input, env.BOT_USERNAME)) {
+      if (isCancelInput(input, botUsername)) {
         await env.D1.prepare(`DELETE FROM batch_sessions WHERE id = ?`).bind(filterSession.id).run();
         return tgAPI('sendMessage', { chat_id: chatId, message_thread_id: topicId, text: "✅ 已取消筛选输入喵～" }, env);
       }
