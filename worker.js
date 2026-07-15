@@ -1,6 +1,6 @@
 /**
- * Cloudflare Workers (Pages) - Telegram Bot Entry Point (V5.14.2)
- * 核心升级：跨群分类合并 + 源群成员校验开关 + /promote 跨群归档。
+ * Cloudflare Workers (Pages) - Telegram Bot Entry Point (V5.15)
+ * 核心升级：跨群分类合并 + 源群成员校验开关 + /promote 跨群归档 + 附近媒体浏览。
  *   - 同名分类合并为单按钮( Map 聚合去重),源群选择按来源区分
  *   - 展示群可配置关闭源群成员校验(分发模式,B群陌生人可看A源,默认安全)
  *   - /promote 回复B群媒体归档到A群(forwardMessage保留第三方转发来源)
@@ -8,8 +8,10 @@
  *   - 显示群(B/C)可经 /bind_source 拉取源群(A)媒体,用户多源筛选(只看A/A+C等)
  *   - 投票达阈值按展示群隐藏(media_hide),不破坏源群数据;管理员可选源库删除
  *   - 共享群自身亦可收录资源,既是展示群也是源群
+ *   - V5.15: 抽取/历史回退键盘常驻「📍 查看附近5个」(同源群·同分类 message_id 邻域)
  * V5.13 零新增表/索引/触发器,仅 chat_settings 新增 source_membership_check/promote_target 逻辑键。
  * V5.14 零新增表/索引/触发器,仅 chat_settings 新增 expose_forward_source 逻辑键；extractForwardSourceDeepLink helper。
+ * V5.15 零新增表/索引/触发器；queryNearbyMedia + showNearbyMedia + near| 回调。
  */
 
 /* =========================================================================
@@ -502,7 +504,7 @@ async function handleSetup(origin, env) {
         <div class="blob-2"></div>
         <div class="glass-card">
           <div class="avatar">🐱</div>
-          <h1>🎉 籽青 V5.14.2 满血上线！</h1>
+          <h1>🎉 籽青 V5.15 满血上线！</h1>
           <p>跨群分类合并 + /promote 归档 + 分发模式开关喵～<br>Webhook 已经帮主人狠狠地绑死啦：</p>
           <div class="code-box">${webhookUrl}</div>
           <p style="margin-top: 1.5rem;">快去 Telegram 里找 <span class="highlight">籽青</span> 玩耍吧！QwQ</p>
@@ -595,7 +597,7 @@ async function handleMessage(message, env, ctx) {
   if (isAddressedBotCommand(text, 'start', botUsername)) return sendMainMenu(chatId, topicId, env, userId);
 
   if (isAddressedBotCommand(text, 'help', botUsername)) {
-    const helpText = `<b>🐱 籽青 V5.14.1 — 说明手册</b>
+    const helpText = `<b>🐱 籽青 V5.15 — 说明手册</b>
 
 <b>━━━ 🎲 基础 ━━━</b>
 /start — 呼出主控制面板
@@ -1682,6 +1684,17 @@ async function handleCallback(callback, env, ctx) {
 
   else if (data.startsWith('fav_add_')) {
     await handleAddFavorite(userId, cbId, parseInt(data.replace('fav_add_', '')), env);
+  }
+  // 🌟 V5.15: 查看当前媒体附近 5 条（同源群·同分类，按 message_id 邻域）
+  //   从媒体键盘点开 → sendMessage；从附近列表「刷新」点开 → editMessageText
+  else if (data.startsWith('near|')) {
+    const mediaId = parseInt(data.split('|')[1], 10);
+    if (mediaId && !isNaN(mediaId)) {
+      const canEdit = !!(callback.message && callback.message.text);
+      await showNearbyMedia(userId, chatId, topicId, mediaId, cbId, env, canEdit ? msgId : null);
+    } else {
+      await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "参数无效喵~", show_alert: true }, env);
+    }
   }
   // 🌟 V5.11: 投票移除
   else if (data.startsWith('vote_remove|')) {
@@ -2842,6 +2855,8 @@ async function sendHistoricalMedia(userId, chatId, msgId, topicId, category, sco
     [ { text: "⏪ 继退", callback_data: `prev_${category}|${scopeChatId}|${offset + 1}` }, { text: "⏭️ 换新", callback_data: `next_${category}|${scopeChatId}` } ],
     [ { text: "❤️ 收藏", callback_data: `fav_add_${media.id}` } ]
   ];
+  // 🌟 V5.15: 始终显示「查看附近5个」(同源群·同分类时间线邻域)
+  actionKeyboard.push([{ text: "📍 查看附近5个", callback_data: `near|${media.id}` }]);
 
   // 🌟 V5.14.1: 历史回退同样加降级直发(与 sendRandomMedia 对称)
   let sentOk = false;
@@ -3042,6 +3057,9 @@ async function sendRandomMedia(userId, chatId, msgId, topicId, category, sourceC
       actionKeyboard.splice(1, 0, [{ text: `👎 移除投票 (${vc}/${voteThreshold})`, callback_data: `vote_remove|${media.id}` }]);
     }
 
+    // 🌟 V5.15: 始终显示「查看附近5个」(同源群·同分类时间线邻域，不依赖看看来源是否可用)
+    actionKeyboard.push([{ text: "📍 查看附近5个", callback_data: `near|${media.id}` }]);
+
     const originalDeepLink = makeDeepLink(media.chat_id, media.message_id);
 
     // 🌟 V5.14.1: 探活降级链 — forward/copy 失败 → 降级 file_id 直发 → 仍失败才判定死链
@@ -3088,6 +3106,7 @@ async function sendRandomMedia(userId, chatId, msgId, topicId, category, sourceC
       const fallbackKeyboard = [
         [ { text: "⏪ 上一个", callback_data: `prev_${category}|${scopeChatId}|1` }, { text: "⏭️ 换一个喵", callback_data: `next_${category}|${scopeChatId}` } ],
         [ { text: "❤️ 收藏", callback_data: `fav_add_${media.id}` } ],
+        [ { text: "📍 查看附近5个", callback_data: `near|${media.id}` } ],
         [ { text: "🏠 呼出主菜单", callback_data: "main_menu_new" } ]
       ];
       const fb = await sendMediaByFileId(outChatId, outTopicId, media, fallbackKeyboard, env);
@@ -4795,6 +4814,138 @@ async function isAdmin(chatId, userId, env) {
 
 function makeDeepLink(chatId, messageId) {
   return `https://t.me/c/${String(chatId).replace('-100', '')}/${messageId}`;
+}
+
+// 🌟 V5.15: 查询当前媒体在同源群·同分类时间线上的附近记录
+//   以 message_id 为序，取当前前 2 + 自身 + 后 2（边界不足则向另一侧补齐，最多 5 条）
+//   返回按 message_id ASC 排序的行；找不到中心媒体时返回 []
+async function queryNearbyMedia(mediaId, limit = 5, env) {
+  const center = await env.D1.prepare(
+    `SELECT id, chat_id, message_id, category_name, media_type, caption, view_count, duration
+     FROM media_library WHERE id = ? LIMIT 1`
+  ).bind(mediaId).first();
+  if (!center) return { center: null, rows: [] };
+
+  const half = Math.max(0, Math.floor((limit - 1) / 2)); // 默认 2
+  const side = Math.max(half, limit - 1 - half);         // 另一侧目标数
+
+  const [beforeRes, afterRes] = await Promise.all([
+    env.D1.prepare(
+      `SELECT id, chat_id, message_id, category_name, media_type, caption, view_count, duration
+       FROM media_library
+       WHERE chat_id = ? AND category_name = ? AND message_id < ?
+       ORDER BY message_id DESC LIMIT ?`
+    ).bind(center.chat_id, center.category_name, center.message_id, side).all(),
+    env.D1.prepare(
+      `SELECT id, chat_id, message_id, category_name, media_type, caption, view_count, duration
+       FROM media_library
+       WHERE chat_id = ? AND category_name = ? AND message_id > ?
+       ORDER BY message_id ASC LIMIT ?`
+    ).bind(center.chat_id, center.category_name, center.message_id, side).all()
+  ]);
+
+  let before = (beforeRes.results || []).slice().reverse(); // 转为 ASC
+  let after = afterRes.results || [];
+
+  // 边界补齐：某一侧不足时向另一侧多取，尽量凑满 limit
+  const need = limit - 1 - before.length - after.length;
+  if (need > 0) {
+    if (before.length < side) {
+      const moreAfter = await env.D1.prepare(
+        `SELECT id, chat_id, message_id, category_name, media_type, caption, view_count, duration
+         FROM media_library
+         WHERE chat_id = ? AND category_name = ? AND message_id > ?
+         ORDER BY message_id ASC LIMIT ?`
+      ).bind(center.chat_id, center.category_name, center.message_id, after.length + need).all();
+      after = moreAfter.results || after;
+    } else if (after.length < side) {
+      const moreBefore = await env.D1.prepare(
+        `SELECT id, chat_id, message_id, category_name, media_type, caption, view_count, duration
+         FROM media_library
+         WHERE chat_id = ? AND category_name = ? AND message_id < ?
+         ORDER BY message_id DESC LIMIT ?`
+      ).bind(center.chat_id, center.category_name, center.message_id, before.length + need).all();
+      before = (moreBefore.results || []).slice().reverse();
+    }
+  }
+
+  // 截断到 limit（自身占 1 位）
+  const room = limit - 1;
+  while (before.length + after.length > room) {
+    if (before.length > after.length) before.shift();
+    else after.pop();
+  }
+
+  const rows = [...before, center, ...after];
+  return { center, rows };
+}
+
+// 🌟 V5.15: 展示附近媒体列表（含原消息深链）
+//   editMsgId 有值时原地刷新（附近列表「刷新」）；否则发新消息（从媒体键盘点开）
+async function showNearbyMedia(userId, chatId, topicId, mediaId, cbId, env, editMsgId = null) {
+  const { center, rows } = await queryNearbyMedia(mediaId, 5, env);
+  if (!center) {
+    return tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "呜呜，找不到这条媒体记录喵~", show_alert: true }, env);
+  }
+
+  await tgAPI('answerCallbackQuery', { callback_query_id: cbId, text: "附近媒体来啦喵~" }, env);
+
+  const escapeHTML = (str) => String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const typeLabel = { photo: '🖼️', video: '🎬', animation: '🎠', document: '📄' };
+  const formatDuration = (sec) => {
+    if (sec == null || sec === '') return '';
+    const n = Number(sec);
+    if (!Number.isFinite(n) || n < 0) return '';
+    const m = Math.floor(n / 60);
+    const s = Math.floor(n % 60);
+    return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+  };
+
+  let text = `📍 <b>附近媒体</b>（同源群·同分类，按消息时间线）\n`;
+  text += `🏷️ 分类: ${escapeHTML(center.category_name)}\n`;
+  text += `📁 源群: <code>${center.chat_id}</code>\n\n`;
+
+  if (rows.length === 0) {
+    text += "附近没有其他收录记录喵~";
+  } else {
+    rows.forEach((row, idx) => {
+      const isCenter = row.id === center.id;
+      const icon = typeLabel[row.media_type] || '📎';
+      const cap = escapeHTML((row.caption || '').substring(0, 18) || '无配文');
+      const dur = formatDuration(row.duration);
+      const durPart = dur ? ` · ⏱${dur}` : '';
+      const mark = isCenter ? ' 👈 <b>当前</b>' : '';
+      const link = makeDeepLink(row.chat_id, row.message_id);
+      text += `${idx + 1}. ${icon} <a href="${link}">${cap}</a>${durPart} · 👀${row.view_count || 0}${mark}\n`;
+    });
+  }
+
+  const markup = {
+    inline_keyboard: [
+      [{ text: "🔄 刷新附近", callback_data: `near|${mediaId}` }],
+      [{ text: "🏠 呼出主菜单", callback_data: "main_menu_new" }]
+    ]
+  };
+
+  if (editMsgId) {
+    await tgAPI('editMessageText', {
+      chat_id: chatId,
+      message_id: editMsgId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: markup
+    }, env);
+  } else {
+    await tgAPI('sendMessage', {
+      chat_id: chatId,
+      message_thread_id: topicId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: markup
+    }, env);
+  }
 }
 
 // 🌟 V5.14.1: 媒体死链探活降级与完整清理
